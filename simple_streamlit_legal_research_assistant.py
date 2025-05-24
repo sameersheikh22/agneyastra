@@ -22,7 +22,7 @@ def init_clients():
     """Initialize API clients with provided keys"""
     # Gemini
     genai.configure(api_key="AIzaSyBvaCZAq2bJkLgdA1kuY_IBLE6TkzP7k1k")
-    gemini_model = genai.GenerativeModel('gemini-2.0-flash')
+    gemini_model = genai.GenerativeModel('gemini-pro')
 
     # Groq
     groq_client = Groq(api_key="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")
@@ -164,7 +164,7 @@ def keyword_generator_agent(groq_client, extracted_args: Dict[str, str], seed_ke
 
 # Agent 3: Source Crawler Agent
 def source_crawler_agent(keywords: List[str], num_results: int = 5) -> List[Dict[str, Any]]:
-    """Search multiple sources for relevant papers"""
+    """Search multiple sources for relevant papers, cases, and news"""
     all_results = []
 
     # Tavily API search
@@ -175,47 +175,91 @@ def source_crawler_agent(keywords: List[str], num_results: int = 5) -> List[Dict
     serper_key = "3611eaea5638a59ec95b6329077ddd9c8a71ece3"
     serper_url = "https://google.serper.dev/search"
 
-    for keyword in keywords[:5]:  # Limit to avoid rate limits
-        # Tavily search focusing on SSRN and JSTOR
-        tavily_query = f"site:ssrn.com OR site:jstor.org {keyword}"
-        try:
-            tavily_response = requests.post(
-                tavily_url,
-                json={
-                    "api_key": tavily_key,
-                    "query": tavily_query,
-                    "search_depth": "advanced",
-                    "max_results": num_results
-                }
-            )
-            if tavily_response.status_code == 200:
-                results = tavily_response.json().get('results', [])
-                for r in results:
-                    all_results.append({
-                        "title": r.get('title', ''),
-                        "url": r.get('url', ''),
-                        "snippet": r.get('content', ''),
-                        "source": "Tavily",
-                        "keyword_used": keyword
-                    })
-        except:
-            pass
+    # Search different types of sources
+    source_types = [
+        {"suffix": "scholarly article PDF", "type": "scholarly"},
+        {"suffix": "case law judgment", "type": "case_law"},
+        {"suffix": "legal news recent", "type": "news"}
+    ]
 
-        # Serper search for broader results
+    for keyword in keywords[:5]:  # Limit to avoid rate limits
+        for source_type in source_types:
+            # Tavily search with specific source type
+            if source_type["type"] == "scholarly":
+                tavily_query = f'site:ssrn.com OR site:jstor.org "{keyword}" filetype:pdf'
+            elif source_type["type"] == "case_law":
+                tavily_query = f'"{keyword}" judgment court case decision'
+            else:  # news
+                tavily_query = f'"{keyword}" legal news regulation 2024 2025'
+
+            try:
+                tavily_response = requests.post(
+                    tavily_url,
+                    json={
+                        "api_key": tavily_key,
+                        "query": tavily_query,
+                        "search_depth": "advanced",
+                        "max_results": num_results,
+                        "include_raw_content": True,
+                        "include_domains": ["ssrn.com", "jstor.org", "courtlistener.com", "law.com", "reuters.com"] if
+                        source_type["type"] != "news" else []
+                    }
+                )
+                if tavily_response.status_code == 200:
+                    results = tavily_response.json().get('results', [])
+                    for r in results:
+                        # Skip SSRN landing pages
+                        if "subscribe to this fee journal" not in r.get('content', '').lower():
+                            all_results.append({
+                                "title": r.get('title', ''),
+                                "url": r.get('url', ''),
+                                "snippet": r.get('content', '')[:500],  # Limit snippet length
+                                "raw_content": r.get('raw_content', '')[:1000] if r.get('raw_content') else '',
+                                "source": "Tavily",
+                                "source_type": source_type["type"],
+                                "keyword_used": keyword
+                            })
+            except:
+                pass
+
+        # Serper search for additional results
         try:
+            # Search for PDFs and full texts
             serper_response = requests.post(
                 serper_url,
-                json={"q": f"{keyword} legal research scholarly"},
+                json={"q": f'{keyword} filetype:pdf OR "full text" legal research'},
                 headers={"X-API-KEY": serper_key}
             )
             if serper_response.status_code == 200:
                 results = serper_response.json().get('organic', [])[:num_results]
                 for r in results:
+                    if "pdf" in r.get('link', '').lower() or "full" in r.get('title', '').lower():
+                        all_results.append({
+                            "title": r.get('title', ''),
+                            "url": r.get('link', ''),
+                            "snippet": r.get('snippet', ''),
+                            "raw_content": "",
+                            "source": "Serper",
+                            "source_type": "scholarly",
+                            "keyword_used": keyword
+                        })
+
+            # Search for case law
+            serper_response = requests.post(
+                serper_url,
+                json={"q": f'{keyword} "v." case judgment court'},
+                headers={"X-API-KEY": serper_key}
+            )
+            if serper_response.status_code == 200:
+                results = serper_response.json().get('organic', [])[:3]
+                for r in results:
                     all_results.append({
                         "title": r.get('title', ''),
                         "url": r.get('link', ''),
                         "snippet": r.get('snippet', ''),
+                        "raw_content": "",
                         "source": "Serper",
+                        "source_type": "case_law",
                         "keyword_used": keyword
                     })
         except:
@@ -223,7 +267,15 @@ def source_crawler_agent(keywords: List[str], num_results: int = 5) -> List[Dict
 
         time.sleep(0.5)  # Rate limiting
 
-    return all_results
+    # Remove duplicates based on URL
+    seen_urls = set()
+    unique_results = []
+    for result in all_results:
+        if result['url'] not in seen_urls:
+            seen_urls.add(result['url'])
+            unique_results.append(result)
+
+    return unique_results
 
 
 # Agent 4: Citation Chainer Agent
@@ -346,7 +398,42 @@ def relevance_scorer_agent(groq_client, papers: List[Dict[str, Any]], research_c
     return scored_papers
 
 
-# Format citations
+# Add new Summary Extraction Agent after the citation chainer agent
+def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Extract meaningful summaries from paper content"""
+    for paper in papers[:10]:  # Limit for performance
+        if paper.get('raw_content') and len(paper['raw_content']) > 100:
+            prompt = f"""
+            Extract a concise summary from this academic paper content:
+
+            Title: {paper['title']}
+            Content: {paper['raw_content'][:1500]}
+
+            Provide:
+            1. Main argument/thesis (1-2 sentences)
+            2. Key findings or principles (2-3 bullet points)
+            3. Relevance to AI regulation and liability
+
+            Format as JSON with keys: main_argument, key_findings, ai_relevance
+            """
+
+            try:
+                response = gemini_model.generate_content(prompt)
+                summary_data = json.loads(response.text)
+                paper['extracted_summary'] = summary_data.get('main_argument', '')
+                paper['key_findings'] = summary_data.get('key_findings', [])
+                paper['ai_relevance'] = summary_data.get('ai_relevance', '')
+            except:
+                # Fallback to snippet
+                paper['extracted_summary'] = paper.get('snippet', '')[:200]
+                paper['key_findings'] = []
+                paper['ai_relevance'] = "Relevant to AI governance research"
+        else:
+            paper['extracted_summary'] = paper.get('snippet', '')[:200]
+
+    return papers
+
+
 def format_citation(paper: Dict[str, Any], style: str = "APA") -> str:
     """Format citation in requested style"""
     title = paper.get('title', 'Unknown Title')
@@ -497,31 +584,87 @@ def main():
         with results_container:
             st.subheader(f"Found {len(scored_papers)} Relevant Sources")
 
-            # Display top papers
-            for idx, paper in enumerate(scored_papers[:10]):
-                with st.expander(f"📄 {paper['title'][:80]}... (Score: {paper.get('relevance_score', 'N/A')})"):
-                    col1, col2 = st.columns([3, 1])
+            # Group results by type
+            scholarly_papers = [p for p in scored_papers if p.get('source_type') == 'scholarly']
+            case_law = [p for p in scored_papers if p.get('source_type') == 'case_law']
+            news_articles = [p for p in scored_papers if p.get('source_type') == 'news']
 
-                    with col1:
-                        st.write(f"**Snippet:** {paper['snippet']}")
-                        st.write(f"**Relevance:** {paper.get('relevance_reason', 'N/A')}")
-                        if paper.get('key_insights'):
-                            st.write(f"**Key Insights:** {paper['key_insights']}")
-                        st.write(f"**Source:** {paper['source']} | **Keyword:** {paper.get('keyword_used', 'N/A')}")
+            # Display by category
+            if scholarly_papers:
+                st.markdown("### 📚 Scholarly Articles")
+                for idx, paper in enumerate(scholarly_papers[:5]):
+                    with st.expander(f"📄 {paper['title'][:80]}... (Score: {paper.get('relevance_score', 'N/A')})"):
+                        col1, col2 = st.columns([3, 1])
 
-                    with col2:
-                        st.link_button("View Source", paper['url'], use_container_width=True)
+                        with col1:
+                            # Display extracted summary if available
+                            if paper.get('raw_content'):
+                                st.write("**Summary:**")
+                                summary = paper['raw_content'][:300] + "..." if len(paper['raw_content']) > 300 else \
+                                paper['raw_content']
+                                st.write(summary)
+                            else:
+                                st.write(f"**Snippet:** {paper['snippet']}")
 
-                    # Citation
-                    st.code(format_citation(paper, citation_style), language="text")
+                            st.write(f"**Relevance:** {paper.get('relevance_reason', 'N/A')}")
+                            if paper.get('key_insights'):
+                                st.write(f"**Key Insights:** {paper['key_insights']}")
+                            st.write(f"**Source:** {paper['source']} | **Keyword:** {paper.get('keyword_used', 'N/A')}")
+
+                        with col2:
+                            st.link_button("View Source", paper['url'], use_container_width=True)
+                            if "pdf" in paper['url'].lower():
+                                st.caption("📄 PDF Available")
+
+                        # Citation
+                        st.code(format_citation(paper, citation_style), language="text")
+
+            if case_law:
+                st.markdown("### ⚖️ Legal Judgments & Case Law")
+                for idx, case in enumerate(case_law[:5]):
+                    with st.expander(f"⚖️ {case['title'][:80]}... (Score: {case.get('relevance_score', 'N/A')})"):
+                        col1, col2 = st.columns([3, 1])
+
+                        with col1:
+                            st.write(f"**Case Summary:** {case['snippet']}")
+                            st.write(f"**Relevance:** {case.get('relevance_reason', 'N/A')}")
+                            st.write(f"**Legal Principles:** {case.get('key_insights', 'N/A')}")
+
+                        with col2:
+                            st.link_button("View Case", case['url'], use_container_width=True)
+
+                        # Legal citation
+                        st.code(format_citation(case, "Bluebook"), language="text")
+
+            if news_articles:
+                st.markdown("### 📰 Recent Legal News & Developments")
+                for idx, article in enumerate(news_articles[:5]):
+                    with st.expander(f"📰 {article['title'][:80]}... (Score: {article.get('relevance_score', 'N/A')})"):
+                        col1, col2 = st.columns([3, 1])
+
+                        with col1:
+                            st.write(f"**Summary:** {article['snippet']}")
+                            st.write(f"**Relevance:** {article.get('relevance_reason', 'N/A')}")
+                            st.write(f"**Key Developments:** {article.get('key_insights', 'N/A')}")
+
+                        with col2:
+                            st.link_button("Read Article", article['url'], use_container_width=True)
+
+                        # News citation
+                        st.code(format_citation(article, citation_style), language="text")
 
             # Citation suggestions
             if citation_suggestions:
-                st.subheader("Suggested Related Works")
+                st.markdown("### 🔗 Suggested Related Works")
                 for suggestion in citation_suggestions[:5]:
                     st.write(f"• **{suggestion.get('title', 'N/A')}**")
                     st.write(f"  *Relevance:* {suggestion.get('relevance_reason', 'N/A')}")
                     st.write(f"  *From:* {suggestion.get('parent_paper', 'N/A')}")
+                    if suggestion.get('search_terms'):
+                        search_query = ' '.join(suggestion['search_terms'])
+                        if st.button(f"Search for this", key=f"search_{suggestion.get('title', '')[:20]}"):
+                            # Add to keywords for new search
+                            st.session_state['additional_search'] = search_query
 
         # Export options
         st.divider()

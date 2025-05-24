@@ -1,0 +1,15 @@
+# Python
+venv/
+*.pyc
+__pycache__/
+*.env
+
+# API Keys & Sensitive Config
+legal_research_assistant/config.py
+
+# Saved data/results
+legal_research_assistant/data/*.json
+
+# IDE specific
+.idea/
+.vscode/

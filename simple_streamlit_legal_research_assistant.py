@@ -26,10 +26,8 @@ def init_clients(api_key: str, groq_api_key_override: str = None):
         genai.configure(api_key=api_key)
         gemini_model = genai.GenerativeModel('gemini-2.0-flash')
     except Exception as e:
-        st.sidebar.error(f"Gemini Init Error: {e}") # Display error in sidebar for visibility
+        st.sidebar.error(f"Gemini Init Error: {e}")  # Display error in sidebar for visibility
         gemini_model = None
-    
-
 
     # Groq
     # Use override if provided, else use the hardcoded one.
@@ -44,7 +42,7 @@ def init_clients(api_key: str, groq_api_key_override: str = None):
             groq_client = None
     else:
         st.sidebar.warning("Groq API key not available.")
-        
+
     return gemini_model, groq_client
 
 
@@ -90,40 +88,45 @@ def argument_extraction_agent_ollama(base_paper_content: str, research_angle: st
     }
 
     try:
-        response = requests.post(ollama_api_url, json=payload, timeout=60) # Added timeout
+        response = requests.post(ollama_api_url, json=payload, timeout=60)  # Added timeout
         response.raise_for_status()  # Raise an exception for HTTP errors (4xx or 5xx)
-        
+
         ollama_response_json = response.json()
-        
+
         # The actual JSON output is in the 'response' field of Ollama's response
         if 'response' in ollama_response_json and isinstance(ollama_response_json['response'], str):
-            try:
-                # Attempt to clean common Ollama JSON response issues
-                cleaned_json_str = ollama_response_json['response']
-                # Remove markdown backticks if present
-                if cleaned_json_str.startswith("```json"):
-                    cleaned_json_str = cleaned_json_str[7:]
-                if cleaned_json_str.endswith("```"):
-                    cleaned_json_str = cleaned_json_str[:-3]
-                
-                extracted_data = json.loads(cleaned_json_str.strip())
-                # Validate expected keys
-                if not all(key in extracted_data for key in ["core_thesis", "key_concepts", "new_angle", "research_directions"]):
-                    st.error(f"Ollama response missing some keys. Received: {extracted_data.keys()}")
-                    return {**error_response_template, "core_thesis": "Error: Ollama response incomplete."}
-                return extracted_data
-            except json.JSONDecodeError as e:
-                st.error(f"Ollama JSON Parsing Error: {e}. Response text: {ollama_response_json['response'][:500]}")
-                return {**error_response_template, "core_thesis": f"Error: Ollama JSON Parsing Error - {e}"}
+            response_text = ollama_response_json['response'].strip()
+            json_str_to_parse = None
+            match = re.search(r'\{[\s\S]*\}', response_text)
+            if match:
+                json_str_to_parse = match.group(0)
+                try:
+                    extracted_data = json.loads(json_str_to_parse)
+                    # Validate expected keys
+                    if not all(key in extracted_data for key in
+                               ["core_thesis", "key_concepts", "new_angle", "research_directions"]):
+                        st.error(
+                            f"Ollama Argument Extraction: Response missing some keys. Received: {extracted_data.keys()}")
+                        return {**error_response_template, "core_thesis": "Error: Ollama response incomplete."}
+                    return extracted_data
+                except json.JSONDecodeError as e:
+                    st.error(
+                        f"Ollama Argument Extraction JSON Parsing Error: {e}. Attempted to parse: '{json_str_to_parse[:500]}'")
+                    return {**error_response_template, "core_thesis": f"Error: Ollama JSON Parsing Error - {e}"}
+            else:
+                st.error(
+                    f"Ollama Argument Extraction: No JSON object found in response. Response text: {response_text[:500]}")
+                return {**error_response_template, "core_thesis": "Error: No JSON object in Ollama response."}
         else:
-            st.error(f"Ollama Error: 'response' field missing or not a string in API output. Full response: {ollama_response_json}")
+            st.error(
+                f"Ollama Argument Extraction Error: 'response' field missing or not a string in API output. Full response: {ollama_response_json}")
             return {**error_response_template, "core_thesis": "Error: Ollama response format unexpected."}
 
     except requests.exceptions.RequestException as e:
-        st.error(f"Ollama API Request Error: {e}")
+        st.error(f"Ollama Argument Extraction API Request Error: {e}")
         return {**error_response_template, "core_thesis": f"Error: Ollama API Request Error - {e}"}
     except Exception as e:
-        st.error(f"An unexpected error occurred with Ollama: {e}")
+        st.error(f"An unexpected error in Ollama Argument Extraction: {e}")
         return {**error_response_template, "core_thesis": f"Error: Unexpected error with Ollama - {e}"}
 
 
@@ -131,13 +134,13 @@ def argument_extraction_agent_ollama(base_paper_content: str, research_angle: st
 def argument_extraction_agent(gemini_model, base_paper_content: str, research_angle: str) -> Dict[str, str]:
     """Extract core thesis and identify new research direction with API key rotation or Ollama."""
 
-    selected_model = st.session_state.get('selected_model', "Gemini") # Default to Gemini if not set
+    selected_model = st.session_state.get('selected_model', "Gemini")  # Default to Gemini if not set
 
     if selected_model == "Ollama":
         return argument_extraction_agent_ollama(base_paper_content, research_angle)
-    
+
     # Existing Gemini Logic (ensure gemini_model is available)
-    if not gemini_model: # Added check for gemini_model
+    if not gemini_model:  # Added check for gemini_model
         st.error("Gemini model not available for argument extraction.")
         return {
             "core_thesis": "Error: Gemini model not available.",
@@ -145,13 +148,14 @@ def argument_extraction_agent(gemini_model, base_paper_content: str, research_an
             "new_angle": research_angle,
             "research_directions": ["Error: Gemini model not available."]
         }
-        
-    if not st.session_state.get('gemini_api_keys_list') or not isinstance(st.session_state.gemini_api_keys_list, list) or not st.session_state.gemini_api_keys_list:
+
+    if not st.session_state.get('gemini_api_keys_list') or not isinstance(st.session_state.gemini_api_keys_list,
+                                                                          list) or not st.session_state.gemini_api_keys_list:
         st.error("Gemini API keys not configured or empty. Please set them in the sidebar.")
         return {
-            "core_thesis": "Error: API keys not configured", 
-            "key_concepts": [], 
-            "new_angle": research_angle, 
+            "core_thesis": "Error: API keys not configured",
+            "key_concepts": [],
+            "new_angle": research_angle,
             "research_directions": ["Error: API keys not configured"]
         }
 
@@ -185,35 +189,39 @@ def argument_extraction_agent(gemini_model, base_paper_content: str, research_an
         current_api_key = st.session_state.gemini_api_keys_list[current_key_index]
 
         try:
-            time.sleep(2) # Added sleep before API call
+            time.sleep(2)  # Added sleep before API call
             genai.configure(api_key=current_api_key, transport='rest')
             # Use the gemini_model instance passed, assuming genai.configure updates its underlying client.
             # If issues persist, one might need to re-initialize:
             # current_model_for_attempt = genai.GenerativeModel('gemini-2.0-flash')
             # response = current_model_for_attempt.generate_content(prompt)
-            response = gemini_model.generate_content(prompt) 
-            
+            response = gemini_model.generate_content(prompt)
+
             response_text = response.text.strip()
             if "```json" in response_text:
                 response_text = response_text.split("```json")[1].split("```")[0].strip()
             elif "```" in response_text:
                 response_text = response_text.split("```")[1].split("```")[0].strip()
-            
+
             result = json.loads(response_text)
-            return result # Success
+            return result  # Success
 
         except google_exceptions.ResourceExhausted as e:
-            st.warning(f"Rate limit hit with key ending: ...{current_api_key[-4:]} (Attempt {attempt + 1}/{num_keys}). Trying next key.")
+            st.warning(
+                f"Rate limit hit with key ending: ...{current_api_key[-4:]} (Attempt {attempt + 1}/{num_keys}). Trying next key.")
             st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
             if attempt == num_keys - 1:
                 st.error("All Gemini API keys are currently rate-limited. Please try again later or add new keys.")
                 # Fallback to original dynamic content if all keys fail
                 angle_words = research_angle.split()[:10]
                 content_words = base_paper_content.split()[:50]
-                key_terms = [word for word in angle_words + content_words if len(word) > 4 and word.lower() not in ['this', 'that', 'these', 'those', 'which', 'where', 'when']]
+                key_terms = [word for word in angle_words + content_words if
+                             len(word) > 4 and word.lower() not in ['this', 'that', 'these', 'those', 'which', 'where',
+                                                                    'when']]
                 return {
                     "core_thesis": f"Analysis of legal aspects related to {' '.join(angle_words[:5])} (All keys rate-limited)",
-                    "key_concepts": list(set(key_terms[:5])) if key_terms else ["legal analysis", "research", "regulation"],
+                    "key_concepts": list(set(key_terms[:5])) if key_terms else ["legal analysis", "research",
+                                                                                "regulation"],
                     "new_angle": research_angle,
                     "research_directions": [
                         f"Comparative analysis of {angle_words[0] if angle_words else 'topic'} (All keys rate-limited)",
@@ -221,28 +229,34 @@ def argument_extraction_agent(gemini_model, base_paper_content: str, research_an
                     ]
                 }
         except Exception as e:
-            st.error(f"An unexpected error occurred with key ...{current_api_key[-4:]} (Attempt {attempt + 1}/{num_keys}): {e}")
-            st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys # Rotate key on other errors too
+            st.error(
+                f"An unexpected error occurred with key ...{current_api_key[-4:]} (Attempt {attempt + 1}/{num_keys}): {e}")
+            st.session_state.current_gemini_key_index = (
+                                                                    current_key_index + 1) % num_keys  # Rotate key on other errors too
             if attempt == num_keys - 1:
                 # Fallback to original dynamic content if all keys fail
                 angle_words = research_angle.split()[:10]
                 content_words = base_paper_content.split()[:50]
-                key_terms = [word for word in angle_words + content_words if len(word) > 4 and word.lower() not in ['this', 'that', 'these', 'those', 'which', 'where', 'when']]
+                key_terms = [word for word in angle_words + content_words if
+                             len(word) > 4 and word.lower() not in ['this', 'that', 'these', 'those', 'which', 'where',
+                                                                    'when']]
                 return {
                     "core_thesis": f"Analysis of legal aspects related to {' '.join(angle_words[:5])} (Error after trying all keys)",
-                    "key_concepts": list(set(key_terms[:5])) if key_terms else ["legal analysis", "research", "regulation"],
+                    "key_concepts": list(set(key_terms[:5])) if key_terms else ["legal analysis", "research",
+                                                                                "regulation"],
                     "new_angle": research_angle,
                     "research_directions": [
                         f"Comparative analysis of {angle_words[0] if angle_words else 'topic'} (Error after trying all keys)",
                         f"Legal framework for {' '.join(angle_words[:3]) if angle_words else 'subject matter'} (Error after trying all keys)"
                     ]
                 }
-    
+
     # Fallback if loop somehow finishes without returning (should be caught by last attempt logic)
     angle_words = research_angle.split()[:10]
     content_words = base_paper_content.split()[:50]
 
-    key_terms = [word for word in angle_words + content_words if len(word) > 4 and word.lower() not in ['this', 'that', 'these', 'those', 'which', 'where', 'when']]
+    key_terms = [word for word in angle_words + content_words if
+                 len(word) > 4 and word.lower() not in ['this', 'that', 'these', 'those', 'which', 'where', 'when']]
     return {
         "core_thesis": f"Analysis of legal aspects related to {' '.join(angle_words[:5])} (Failed to process with API)",
         "key_concepts": list(set(key_terms[:5])) if key_terms else ["legal analysis", "research", "regulation"],
@@ -252,6 +266,7 @@ def argument_extraction_agent(gemini_model, base_paper_content: str, research_an
             f"Legal framework for {' '.join(angle_words[:3]) if angle_words else 'subject matter'} (Failed to process with API)"
         ]
     }
+
 
 # Agent 2: Keyword Generator Agent
 def keyword_generator_agent(groq_client, extracted_args: Dict[str, str], seed_keywords: List[str] = []) -> List[str]:
@@ -487,7 +502,7 @@ def citation_chainer_agent_ollama(top_papers: List[Dict[str, Any]]) -> List[Dict
             "prompt": prompt,
             "stream": False
         }
-        
+
         error_placeholder = {
             "title": f"Could not fetch citations for {paper.get('title', 'N/A')} via Ollama",
             "relevance_reason": "Ollama API error or parsing issue.",
@@ -500,38 +515,54 @@ def citation_chainer_agent_ollama(top_papers: List[Dict[str, Any]]) -> List[Dict
             response.raise_for_status()
             ollama_response_json = response.json()
 
+            processed_successfully_for_paper = False
             if 'response' in ollama_response_json and isinstance(ollama_response_json['response'], str):
-                try:
-                    cleaned_json_str = ollama_response_json['response']
-                    if cleaned_json_str.startswith("```json"):
-                        cleaned_json_str = cleaned_json_str[7:]
-                    if cleaned_json_str.endswith("```"):
-                        cleaned_json_str = cleaned_json_str[:-3]
-                    
-                    citations = json.loads(cleaned_json_str.strip())
-                    if isinstance(citations, list):
-                        for citation in citations:
-                            if isinstance(citation, dict) and "title" in citation and "relevance_reason" in citation and "search_terms" in citation:
-                                citation['parent_paper'] = paper['title']
-                                chained_citations.append(citation)
-                            else:
-                                st.warning(f"Ollama Citation Chainer: Skipping malformed citation object: {citation} for paper {paper.get('title')}")
-                    else:
-                        st.error(f"Ollama Citation Chainer: Expected a list from JSON, got {type(citations)} for paper {paper.get('title')}")
-                        chained_citations.append(error_placeholder)
-                except json.JSONDecodeError as e:
-                    st.error(f"Ollama Citation Chainer JSON Parsing Error: {e}. Response: {ollama_response_json['response'][:500]} for paper {paper.get('title')}")
-                    chained_citations.append(error_placeholder)
-            else:
-                st.error(f"Ollama Citation Chainer Error: 'response' field missing or invalid. Full response: {ollama_response_json} for paper {paper.get('title')}")
-                chained_citations.append(error_placeholder)
+                response_text_content = ollama_response_json['response'].strip()
+                json_str_to_parse = None
+                citations_list = None
+
+                match = re.search(r'\[[\s\S]*\]', response_text_content)
+                if match:
+                    json_str_to_parse = match.group(0)
+                    try:
+                        citations_list = json.loads(json_str_to_parse)
+                        if isinstance(citations_list, list):
+                            for citation in citations_list:
+                                if isinstance(citation,
+                                              dict) and "title" in citation and "relevance_reason" in citation and "search_terms" in citation:
+                                    citation['parent_paper'] = paper['title']
+                                    chained_citations.append(citation)
+                                    processed_successfully_for_paper = True
+                                else:
+                                    st.warning(
+                                        f"Ollama Citation Chainer: Skipping malformed citation object: {citation} for paper {paper.get('title')}")
+                            if not processed_successfully_for_paper and not citations_list:  # List was empty
+                                st.warning(
+                                    f"Ollama Citation Chainer: Extracted JSON list was empty for paper {paper.get('title')}")
+                            elif not processed_successfully_for_paper:  # List had items, but all were malformed
+                                st.warning(
+                                    f"Ollama Citation Chainer: All citation objects were malformed in list for paper {paper.get('title')}")
+                        else:
+                            st.error(
+                                f"Ollama Citation Chainer: Regex found a list, but parsing resulted in type {type(citations_list)} for paper {paper.get('title')}")
+                    except json.JSONDecodeError as json_err:
+                        st.error(
+                            f"Ollama Citation Chainer JSONDecodeError: {json_err} for paper '{paper.get('title', 'N/A')}'. Attempted to parse from regex: '{json_str_to_parse[:500]}'")
+                else:  # Regex did not find a list
+                    st.warning(
+                        f"Ollama Citation Chainer: No JSON list found in response for paper '{paper.get('title', 'N/A')}'. Response: {response_text_content[:200]}")
+            else:  # 'response' field missing or not a string
+                st.error(
+                    f"Ollama Citation Chainer Error: 'response' field missing or invalid. Full response: {ollama_response_json} for paper {paper.get('title')}")
+
         except requests.exceptions.RequestException as e:
             st.error(f"Ollama Citation Chainer API Request Error: {e} for paper {paper.get('title')}")
-            chained_citations.append(error_placeholder)
         except Exception as e:
-            st.error(f"Unexpected error in Ollama Citation Chainer: {e} for paper {paper.get('title')}")
+            st.error(f"Unexpected error in Ollama Citation Chainer for paper {paper.get('title', 'N/A')}: {e}")
+
+        if not processed_successfully_for_paper:
             chained_citations.append(error_placeholder)
-            
+
     return chained_citations
 
 
@@ -547,11 +578,14 @@ def citation_chainer_agent(gemini_model, top_papers: List[Dict[str, Any]]) -> Li
     # Existing Gemini Logic
     if not gemini_model:
         st.error("Citation Chainer: Gemini model not available.")
-        return [{"title": "Error: Gemini model not available.", "relevance_reason": "", "search_terms": [], "parent_paper": "N/A"}]
+        return [{"title": "Error: Gemini model not available.", "relevance_reason": "", "search_terms": [],
+                 "parent_paper": "N/A"}]
 
-    if not st.session_state.get('gemini_api_keys_list') or not isinstance(st.session_state.gemini_api_keys_list, list) or not st.session_state.gemini_api_keys_list:
+    if not st.session_state.get('gemini_api_keys_list') or not isinstance(st.session_state.gemini_api_keys_list,
+                                                                          list) or not st.session_state.gemini_api_keys_list:
         st.error("Citation Chainer: Gemini API keys not configured or empty.")
-        return [{"title": "Error: API keys not configured.", "relevance_reason": "", "search_terms": [], "parent_paper": "N/A"}]
+        return [{"title": "Error: API keys not configured.", "relevance_reason": "", "search_terms": [],
+                 "parent_paper": "N/A"}]
 
     chained_citations = []
     num_keys = len(st.session_state.gemini_api_keys_list)
@@ -570,52 +604,55 @@ def citation_chainer_agent(gemini_model, top_papers: List[Dict[str, Any]]) -> Li
 
         Format as JSON list with keys: title, relevance_reason, search_terms
         """
-        
+
         processed_successfully = False
         for attempt in range(num_keys):
             current_key_index = st.session_state.current_gemini_key_index
             current_api_key = st.session_state.gemini_api_keys_list[current_key_index]
 
             try:
-                time.sleep(2) # Added sleep before API call
+                time.sleep(2)  # Added sleep before API call
                 genai.configure(api_key=current_api_key, transport='rest')
                 # As before, assuming genai.configure updates the existing model instance.
                 # If not, re-initialize: current_model_for_attempt = genai.GenerativeModel('gemini-2.0-flash')
                 response = gemini_model.generate_content(prompt)
-                
+
                 response_text = response.text.strip()
                 if response_text.startswith("```json"):
                     response_text = response_text.split("```json")[1].split("```")[0].strip()
-                elif response_text.startswith("```"): # Handle cases where only ``` is present
+                elif response_text.startswith("```"):  # Handle cases where only ``` is present
                     response_text = response_text.split("```")[1].split("```")[0].strip()
-                
+
                 citations = json.loads(response_text)
                 for citation in citations:
                     citation['parent_paper'] = paper['title']
                     chained_citations.append(citation)
                 processed_successfully = True
-                break # Success for this paper, move to next paper
+                break  # Success for this paper, move to next paper
 
             except google_exceptions.ResourceExhausted as e:
-                st.warning(f"Rate limit hit for Citation Chainer with key ...{current_api_key[-4:]} (Paper: {paper.get('title', 'N/A')}, Attempt {attempt + 1}/{num_keys}). Trying next key.")
+                st.warning(
+                    f"Rate limit hit for Citation Chainer with key ...{current_api_key[-4:]} (Paper: {paper.get('title', 'N/A')}, Attempt {attempt + 1}/{num_keys}). Trying next key.")
                 st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
                 if attempt == num_keys - 1:
                     st.error(f"All keys rate-limited while processing citations for paper: {paper.get('title', 'N/A')}")
             except Exception as e:
-                st.error(f"An error in Citation Chainer with key ...{current_api_key[-4:]} for paper {paper.get('title', 'N/A')} (Attempt {attempt + 1}/{num_keys}): {e}")
+                st.error(
+                    f"An error in Citation Chainer with key ...{current_api_key[-4:]} for paper {paper.get('title', 'N/A')} (Attempt {attempt + 1}/{num_keys}): {e}")
                 st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
                 if attempt == num_keys - 1:
-                    st.error(f"Failed to process citations for paper {paper.get('title', 'N/A')} after trying all keys.")
-            
+                    st.error(
+                        f"Failed to process citations for paper {paper.get('title', 'N/A')} after trying all keys.")
+
         if not processed_successfully:
             # Add a placeholder or note if this paper couldn't be processed
             chained_citations.append({
-                "title": f"Could not fetch citations for {paper.get('title', 'N/A')}", 
-                "relevance_reason": "API error or all keys rate-limited.", 
+                "title": f"Could not fetch citations for {paper.get('title', 'N/A')}",
+                "relevance_reason": "API error or all keys rate-limited.",
                 "search_terms": [],
                 "parent_paper": paper.get('title', 'N/A')
             })
-            
+
     return chained_citations
 
 
@@ -719,7 +756,8 @@ def relevance_scorer_agent(groq_client, papers: List[Dict[str, Any]], research_c
 
 
 # Agent: Summary Extraction Agent (Ollama)
-def summary_extraction_agent_ollama(papers: List[Dict[str, Any]], research_context: Dict[str, str]) -> List[Dict[str, Any]]:
+def summary_extraction_agent_ollama(papers: List[Dict[str, Any]], research_context: Dict[str, str]) -> List[
+    Dict[str, Any]]:
     """Extract meaningful summaries from paper content using Ollama."""
     ollama_api_url = "https://apaims2.0.vassarlabs.com/ollama1/api/generate"
     research_topic = research_context.get('new_angle', 'legal research')
@@ -741,7 +779,7 @@ def summary_extraction_agent_ollama(papers: List[Dict[str, Any]], research_conte
         - "main_argument": Main argument/thesis (1-2 sentences)
         - "key_findings": Key findings or principles (2-3 bullet points as a list of strings)
         - "topic_relevance": Relevance to the research topic: {research_topic} (1 sentence)
-        
+
         Example:
         {{
             "main_argument": "The paper argues X and Y.",
@@ -754,8 +792,9 @@ def summary_extraction_agent_ollama(papers: List[Dict[str, Any]], research_conte
             "prompt": prompt,
             "stream": False
         }
-        
-        error_summary = paper.get('snippet', paper.get('title', 'Error: No summary available via Ollama'))[:200] + " (Ollama Error)"
+
+        error_summary = paper.get('snippet', paper.get('title', 'Error: No summary available via Ollama'))[
+                        :200] + " (Ollama Error)"
         error_findings = ["Ollama Error"]
         error_relevance = "Ollama Error"
 
@@ -765,49 +804,49 @@ def summary_extraction_agent_ollama(papers: List[Dict[str, Any]], research_conte
             ollama_response_json = response.json()
 
             if 'response' in ollama_response_json and isinstance(ollama_response_json['response'], str):
-                try:
-                    cleaned_json_str = ollama_response_json['response']
-                    if cleaned_json_str.startswith("```json"):
-                        cleaned_json_str = cleaned_json_str[7:]
-                    if cleaned_json_str.endswith("```"):
-                        cleaned_json_str = cleaned_json_str[:-3]
-                    
-                    summary_data = json.loads(cleaned_json_str.strip())
-                    
-                    paper['extracted_summary'] = summary_data.get('main_argument', error_summary)
-                    paper['key_findings'] = summary_data.get('key_findings', error_findings)
-                    paper['topic_relevance'] = summary_data.get('topic_relevance', error_relevance)
-                    
-                    if not isinstance(paper['key_findings'], list): # Ensure key_findings is a list
-                        paper['key_findings'] = [str(paper['key_findings'])] if paper['key_findings'] else error_findings
-
-
-                except json.JSONDecodeError as e:
-                    st.error(f"Ollama Summary JSON Parsing Error: {e}. Response: {ollama_response_json['response'][:500]} for paper {paper.get('title')}")
-                    paper['extracted_summary'] = error_summary
-                    paper['key_findings'] = error_findings
-                    paper['topic_relevance'] = error_relevance
+                response_text = ollama_response_json['response'].strip()
+                json_str_to_parse = None
+                match = re.search(r'\{[\s\S]*\}', response_text)
+                if match:
+                    json_str_to_parse = match.group(0)
+                    try:
+                        summary_data = json.loads(json_str_to_parse)
+                        paper['extracted_summary'] = summary_data.get('main_argument', error_summary)
+                        paper['key_findings'] = summary_data.get('key_findings', error_findings)
+                        paper['topic_relevance'] = summary_data.get('topic_relevance', error_relevance)
+                        if not isinstance(paper['key_findings'], list):
+                            paper['key_findings'] = [str(paper['key_findings'])] if paper[
+                                'key_findings'] else error_findings
+                    except json.JSONDecodeError as e:
+                        st.error(
+                            f"Ollama Summary Extraction JSON Parsing Error: {e}. Attempted to parse: '{json_str_to_parse[:500]}' for paper {paper.get('title')}")
+                        paper['extracted_summary'], paper['key_findings'], paper[
+                            'topic_relevance'] = error_summary, error_findings, error_relevance
+                else:
+                    st.error(
+                        f"Ollama Summary Extraction: No JSON object found in response for paper {paper.get('title')}. Response: {response_text[:500]}")
+                    paper['extracted_summary'], paper['key_findings'], paper[
+                        'topic_relevance'] = error_summary, error_findings, error_relevance
             else:
-                st.error(f"Ollama Summary Error: 'response' field missing. Full response: {ollama_response_json} for paper {paper.get('title')}")
-                paper['extracted_summary'] = error_summary
-                paper['key_findings'] = error_findings
-                paper['topic_relevance'] = error_relevance
+                st.error(
+                    f"Ollama Summary Error: 'response' field missing or invalid. Full response: {ollama_response_json} for paper {paper.get('title')}")
+                paper['extracted_summary'], paper['key_findings'], paper[
+                    'topic_relevance'] = error_summary, error_findings, error_relevance
         except requests.exceptions.RequestException as e:
             st.error(f"Ollama Summary API Request Error: {e} for paper {paper.get('title')}")
-            paper['extracted_summary'] = error_summary
-            paper['key_findings'] = error_findings
-            paper['topic_relevance'] = error_relevance
+            paper['extracted_summary'], paper['key_findings'], paper[
+                'topic_relevance'] = error_summary, error_findings, error_relevance
         except Exception as e:
             st.error(f"Unexpected error in Ollama Summary Extraction: {e} for paper {paper.get('title')}")
-            paper['extracted_summary'] = error_summary
-            paper['key_findings'] = error_findings
-            paper['topic_relevance'] = error_relevance
-            
+            paper['extracted_summary'], paper['key_findings'], paper[
+                'topic_relevance'] = error_summary, error_findings, error_relevance
+
     return papers
 
 
 # Add new Summary Extraction Agent after the citation chainer agent
-def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]], research_context: Dict[str, str]) -> List[Dict[str, Any]]:
+def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]], research_context: Dict[str, str]) -> List[
+    Dict[str, Any]]:
     """Extract meaningful summaries from paper content with API key rotation or Ollama."""
 
     selected_model = st.session_state.get('selected_model', "Gemini")
@@ -819,15 +858,18 @@ def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]], researc
     if not gemini_model:
         st.error("Summary Extraction: Gemini model not available.")
         for paper in papers:
-            paper['extracted_summary'] = paper.get('snippet', paper.get('title', 'Error: Gemini model not available')) + " (Gemini Model Error)"
+            paper['extracted_summary'] = paper.get('snippet', paper.get('title',
+                                                                        'Error: Gemini model not available')) + " (Gemini Model Error)"
             paper['key_findings'] = ["Gemini Model Error"]
             paper['topic_relevance'] = "Gemini Model Error"
         return papers
-        
-    if not st.session_state.get('gemini_api_keys_list') or not isinstance(st.session_state.gemini_api_keys_list, list) or not st.session_state.gemini_api_keys_list:
+
+    if not st.session_state.get('gemini_api_keys_list') or not isinstance(st.session_state.gemini_api_keys_list,
+                                                                          list) or not st.session_state.gemini_api_keys_list:
         st.error("Summary Extraction: Gemini API keys not configured or empty.")
         for paper in papers:
-            paper['extracted_summary'] = paper.get('snippet', paper.get('title', 'Error: No summary available')) + " (API Key Error)"
+            paper['extracted_summary'] = paper.get('snippet', paper.get('title',
+                                                                        'Error: No summary available')) + " (API Key Error)"
             paper['key_findings'] = ["API Key Error"]
             paper['topic_relevance'] = "API Key Error"
         return papers
@@ -855,19 +897,19 @@ def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]], researc
 
         Format as JSON with keys: main_argument, key_findings, topic_relevance
         """
-        
+
         processed_successfully = False
         for attempt in range(num_keys):
             current_key_index = st.session_state.current_gemini_key_index
             current_api_key = st.session_state.gemini_api_keys_list[current_key_index]
 
             try:
-                time.sleep(2) # Added sleep before API call
+                time.sleep(2)  # Added sleep before API call
                 genai.configure(api_key=current_api_key, transport='rest')
                 # current_model_for_attempt = genai.GenerativeModel('gemini-2.0-flash')
                 # response = current_model_for_attempt.generate_content(prompt)
                 response = gemini_model.generate_content(prompt)
-                
+
                 response_text = response.text.strip()
                 if response_text.startswith("```json"):
                     response_text = response_text.split("```json")[1].split("```")[0].strip()
@@ -875,28 +917,33 @@ def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]], researc
                     response_text = response_text.split("```")[1].split("```")[0].strip()
 
                 summary_data = json.loads(response_text)
-                paper['extracted_summary'] = summary_data.get('main_argument', paper.get('snippet', 'Error parsing summary')[:200])
+                paper['extracted_summary'] = summary_data.get('main_argument',
+                                                              paper.get('snippet', 'Error parsing summary')[:200])
                 paper['key_findings'] = summary_data.get('key_findings', [])
-                paper['topic_relevance'] = summary_data.get('topic_relevance', f"Relevance to {research_topic} unclear after parsing error.")
+                paper['topic_relevance'] = summary_data.get('topic_relevance',
+                                                            f"Relevance to {research_topic} unclear after parsing error.")
                 processed_successfully = True
-                break # Success for this paper
+                break  # Success for this paper
 
             except google_exceptions.ResourceExhausted as e:
-                st.warning(f"Rate limit hit for Summary Extraction with key ...{current_api_key[-4:]} (Paper: {paper.get('title', 'N/A')}, Attempt {attempt + 1}/{num_keys}). Trying next key.")
+                st.warning(
+                    f"Rate limit hit for Summary Extraction with key ...{current_api_key[-4:]} (Paper: {paper.get('title', 'N/A')}, Attempt {attempt + 1}/{num_keys}). Trying next key.")
                 st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
                 if attempt == num_keys - 1:
                     st.error(f"All keys rate-limited while extracting summary for paper: {paper.get('title', 'N/A')}")
             except Exception as e:
-                st.error(f"An error in Summary Extraction with key ...{current_api_key[-4:]} for paper {paper.get('title', 'N/A')} (Attempt {attempt + 1}/{num_keys}): {e}")
+                st.error(
+                    f"An error in Summary Extraction with key ...{current_api_key[-4:]} for paper {paper.get('title', 'N/A')} (Attempt {attempt + 1}/{num_keys}): {e}")
                 st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
                 if attempt == num_keys - 1:
                     st.error(f"Failed to extract summary for paper {paper.get('title', 'N/A')} after trying all keys.")
 
         if not processed_successfully:
-            paper['extracted_summary'] = paper.get('snippet', paper.get('title', 'Error: No summary available'))[:200] + " (API Error or All Keys Rate-Limited)"
+            paper['extracted_summary'] = paper.get('snippet', paper.get('title', 'Error: No summary available'))[
+                                         :200] + " (API Error or All Keys Rate-Limited)"
             paper['key_findings'] = ["API Error or All Keys Rate-Limited"]
             paper['topic_relevance'] = "API Error or All Keys Rate-Limited"
-            
+
     return papers
 
 
@@ -915,9 +962,10 @@ def case_analysis_agent_ollama(papers: List[Dict[str, Any]]) -> List[Dict[str, A
 
     for paper in papers:
         if paper.get('source_type') == 'case_law':
-            content_to_analyze = paper.get('raw_content', '') if len(paper.get('raw_content', '')) > 200 else paper.get('snippet', '')
+            content_to_analyze = paper.get('raw_content', '') if len(paper.get('raw_content', '')) > 200 else paper.get(
+                'snippet', '')
             if not content_to_analyze: content_to_analyze = paper.get('title', '')
-            truncated_content = content_to_analyze[:2000] # Ollama context limit
+            truncated_content = content_to_analyze[:2000]  # Ollama context limit
 
             prompt = f"""
             Analyze the following legal case based on its title and content.
@@ -951,33 +999,42 @@ def case_analysis_agent_ollama(papers: List[Dict[str, Any]]) -> List[Dict[str, A
                 ollama_response_json = response.json()
 
                 if 'response' in ollama_response_json and isinstance(ollama_response_json['response'], str):
-                    try:
-                        cleaned_json_str = ollama_response_json['response']
-                        if cleaned_json_str.startswith("```json"):
-                            cleaned_json_str = cleaned_json_str[7:]
-                        if cleaned_json_str.endswith("```"):
-                            cleaned_json_str = cleaned_json_str[:-3]
-                        
-                        analysis_results = json.loads(cleaned_json_str.strip())
-                        
-                        paper['case_facts'] = analysis_results.get('case_facts', default_ollama_error_values['case_facts'])
-                        paper['legal_issues'] = analysis_results.get('legal_issues', default_ollama_error_values['legal_issues'])
-                        paper['arguments'] = analysis_results.get('arguments', default_ollama_error_values['arguments'])
-                        paper['judgment'] = analysis_results.get('judgment', default_ollama_error_values['judgment'])
-                        paper['court_findings'] = analysis_results.get('court_findings', default_ollama_error_values['court_findings'])
+                    response_text = ollama_response_json['response'].strip()
+                    json_str_to_parse = None
+                    match = re.search(r'\{[\s\S]*\}', response_text)
+                    if match:
+                        json_str_to_parse = match.group(0)
+                        try:
+                            analysis_results = json.loads(json_str_to_parse)
+                            paper['case_facts'] = analysis_results.get('case_facts',
+                                                                       default_ollama_error_values['case_facts'])
+                            paper['legal_issues'] = analysis_results.get('legal_issues',
+                                                                         default_ollama_error_values['legal_issues'])
+                            paper['arguments'] = analysis_results.get('arguments',
+                                                                      default_ollama_error_values['arguments'])
+                            paper['judgment'] = analysis_results.get('judgment',
+                                                                     default_ollama_error_values['judgment'])
+                            paper['court_findings'] = analysis_results.get('court_findings',
+                                                                           default_ollama_error_values[
+                                                                               'court_findings'])
 
-                        # Ensure arguments is a dict with plaintiff and defendant keys
-                        if not isinstance(paper['arguments'], dict) or not all(k in paper['arguments'] for k in ['plaintiff', 'defendant']):
-                            paper['arguments'] = default_ollama_error_values['arguments']
-                        if not isinstance(paper['legal_issues'], list):
-                             paper['legal_issues'] = [str(paper['legal_issues'])] if paper['legal_issues'] else default_ollama_error_values['legal_issues']
-
-
-                    except json.JSONDecodeError as e:
-                        st.error(f"Ollama Case Analysis JSON Parsing Error: {e}. Response: {ollama_response_json['response'][:500]} for paper {paper.get('title')}")
+                            if not isinstance(paper['arguments'], dict) or not all(
+                                    k in paper['arguments'] for k in ['plaintiff', 'defendant']):
+                                paper['arguments'] = default_ollama_error_values['arguments']
+                            if not isinstance(paper['legal_issues'], list):
+                                paper['legal_issues'] = [str(paper['legal_issues'])] if paper['legal_issues'] else \
+                                default_ollama_error_values['legal_issues']
+                        except json.JSONDecodeError as e:
+                            st.error(
+                                f"Ollama Case Analysis JSON Parsing Error: {e}. Attempted to parse: '{json_str_to_parse[:500]}' for paper {paper.get('title')}")
+                            paper.update(default_ollama_error_values)
+                    else:
+                        st.error(
+                            f"Ollama Case Analysis: No JSON object found in response for paper {paper.get('title')}. Response: {response_text[:500]}")
                         paper.update(default_ollama_error_values)
                 else:
-                    st.error(f"Ollama Case Analysis Error: 'response' field missing. Response: {ollama_response_json} for paper {paper.get('title')}")
+                    st.error(
+                        f"Ollama Case Analysis Error: 'response' field missing or invalid. Response: {ollama_response_json} for paper {paper.get('title')}")
                     paper.update(default_ollama_error_values)
             except requests.exceptions.RequestException as e:
                 st.error(f"Ollama Case Analysis API Request Error: {e} for paper {paper.get('title')}")
@@ -985,9 +1042,9 @@ def case_analysis_agent_ollama(papers: List[Dict[str, Any]]) -> List[Dict[str, A
             except Exception as e:
                 st.error(f"Unexpected error in Ollama Case Analysis: {e} for paper {paper.get('title')}")
                 paper.update(default_ollama_error_values)
-        else: # If not case_law, ensure fields exist if other parts of app expect them, though typically they'd only be accessed if source_type is case_law
-            paper.update({k: paper.get(k, "N/A - Not a case") for k in ['case_facts', 'legal_issues', 'arguments', 'judgment', 'court_findings']})
-
+        else:
+            paper.update({k: paper.get(k, "N/A - Not a case") for k in
+                          ['case_facts', 'legal_issues', 'arguments', 'judgment', 'court_findings']})
 
     return papers
 
@@ -1007,24 +1064,25 @@ def case_analysis_agent(gemini_model, papers: List[Dict[str, Any]]) -> List[Dict
         st.error("Case Analysis: Gemini model not available.")
         for paper in papers:
             if paper.get('source_type') == 'case_law':
-                 paper.update({
-                    'case_facts': "Error: Gemini model not available.", 
-                    'legal_issues': ["Gemini model not available"], 
-                    'arguments': {"plaintiff": "Gemini model not available", "defendant": "Gemini model not available"}, 
-                    'judgment': "Gemini model not available", 
+                paper.update({
+                    'case_facts': "Error: Gemini model not available.",
+                    'legal_issues': ["Gemini model not available"],
+                    'arguments': {"plaintiff": "Gemini model not available", "defendant": "Gemini model not available"},
+                    'judgment': "Gemini model not available",
                     'court_findings': "Gemini model not available"
                 })
         return papers
 
-    if not st.session_state.get('gemini_api_keys_list') or not isinstance(st.session_state.gemini_api_keys_list, list) or not st.session_state.gemini_api_keys_list:
+    if not st.session_state.get('gemini_api_keys_list') or not isinstance(st.session_state.gemini_api_keys_list,
+                                                                          list) or not st.session_state.gemini_api_keys_list:
         st.error("Case Analysis: Gemini API keys not configured or empty.")
         for paper in papers:
             if paper.get('source_type') == 'case_law':
                 paper.update({
-                    'case_facts': "Error: API keys not configured", 
-                    'legal_issues': ["API keys not configured"], 
-                    'arguments': {"plaintiff": "API keys not configured", "defendant": "API keys not configured"}, 
-                    'judgment': "API keys not configured", 
+                    'case_facts': "Error: API keys not configured",
+                    'legal_issues': ["API keys not configured"],
+                    'arguments': {"plaintiff": "API keys not configured", "defendant": "API keys not configured"},
+                    'judgment': "API keys not configured",
                     'court_findings': "API keys not configured"
                 })
         return papers
@@ -1040,8 +1098,9 @@ def case_analysis_agent(gemini_model, papers: List[Dict[str, Any]]) -> List[Dict
                 'judgment': "Failed to analyze after trying all keys.",
                 'court_findings': "Failed to analyze after trying all keys."
             }
-            
-            content_to_analyze = paper.get('raw_content', '') if len(paper.get('raw_content', '')) > 200 else paper.get('snippet', '')
+
+            content_to_analyze = paper.get('raw_content', '') if len(paper.get('raw_content', '')) > 200 else paper.get(
+                'snippet', '')
             if not content_to_analyze: content_to_analyze = paper.get('title', '')
             truncated_content = content_to_analyze[:2000]
 
@@ -1065,56 +1124,62 @@ def case_analysis_agent(gemini_model, papers: List[Dict[str, Any]]) -> List[Dict
                 "court_findings": "The court found that..."
             }}
             """
-            
+
             processed_successfully = False
             for attempt in range(num_keys):
                 current_key_index = st.session_state.current_gemini_key_index
                 current_api_key = st.session_state.gemini_api_keys_list[current_key_index]
 
                 try:
-                    time.sleep(2) # Added sleep before API call
+                    time.sleep(2)  # Added sleep before API call
                     genai.configure(api_key=current_api_key, transport='rest')
                     response = gemini_model.generate_content(prompt)
-                    
+
                     response_text = response.text.strip()
                     if response_text.startswith("```json"):
-                        response_text = response_text[7:] 
+                        response_text = response_text[7:]
                     if response_text.endswith("```"):
-                        response_text = response_text[:-3] 
-                    
+                        response_text = response_text[:-3]
+
                     analysis_results = json.loads(response_text)
 
                     paper['case_facts'] = analysis_results.get('case_facts', "Not available")
                     paper['legal_issues'] = analysis_results.get('legal_issues', [])
-                    paper['arguments'] = analysis_results.get('arguments', {"plaintiff": "Not available", "defendant": "Not available"})
+                    paper['arguments'] = analysis_results.get('arguments', {"plaintiff": "Not available",
+                                                                            "defendant": "Not available"})
                     paper['judgment'] = analysis_results.get('judgment', "Not available")
                     paper['court_findings'] = analysis_results.get('court_findings', "Not available")
                     processed_successfully = True
-                    break 
+                    break
 
                 except google_exceptions.ResourceExhausted as e:
-                    st.warning(f"Rate limit hit for Case Analysis with key ...{current_api_key[-4:]} (Paper: {paper.get('title', 'N/A')}, Attempt {attempt + 1}/{num_keys}). Trying next key.")
+                    st.warning(
+                        f"Rate limit hit for Case Analysis with key ...{current_api_key[-4:]} (Paper: {paper.get('title', 'N/A')}, Attempt {attempt + 1}/{num_keys}). Trying next key.")
                     st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
                     if attempt == num_keys - 1:
                         st.error(f"All keys rate-limited while analyzing case: {paper.get('title', 'N/A')}")
                         paper.update(default_error_values)
                 except json.JSONDecodeError as e:
-                    st.warning(f"Case Analysis: Error decoding JSON for paper '{paper.get('title', 'Unknown Title')}' with key ...{current_api_key[-4:]} (Attempt {attempt + 1}/{num_keys}): {e}. Raw: {response_text[:100]}")
-                    st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys 
+                    st.warning(
+                        f"Case Analysis: Error decoding JSON for paper '{paper.get('title', 'Unknown Title')}' with key ...{current_api_key[-4:]} (Attempt {attempt + 1}/{num_keys}): {e}. Raw: {response_text[:100]}")
+                    st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
                     if attempt == num_keys - 1:
-                        st.error(f"Failed to decode case analysis for {paper.get('title', 'N/A')} after trying all keys.")
+                        st.error(
+                            f"Failed to decode case analysis for {paper.get('title', 'N/A')} after trying all keys.")
                         paper.update(default_error_values)
                 except Exception as e:
-                    st.error(f"An error in Case Analysis with key ...{current_api_key[-4:]} for paper {paper.get('title', 'N/A')} (Attempt {attempt + 1}/{num_keys}): {e}")
+                    st.error(
+                        f"An error in Case Analysis with key ...{current_api_key[-4:]} for paper {paper.get('title', 'N/A')} (Attempt {attempt + 1}/{num_keys}): {e}")
                     st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
                     if attempt == num_keys - 1:
                         st.error(f"Failed to analyze case {paper.get('title', 'N/A')} after trying all keys.")
                         paper.update(default_error_values)
-            
+
             if not processed_successfully:
-                 paper.update(default_error_values)
-                 
+                paper.update(default_error_values)
+
     return papers
+
 
 def format_citation(paper: Dict[str, Any], style: str = "APA") -> str:
     """Format citation in requested style"""
@@ -1146,33 +1211,33 @@ def main():
         st.session_state.clients_initialized = False
     if 'gemini_model' not in st.session_state:
         st.session_state.gemini_model = None
-    if 'groq_client' not in st.session_state: # Initialize Groq client placeholder
+    if 'groq_client' not in st.session_state:  # Initialize Groq client placeholder
         st.session_state.groq_client = None
     if 'selected_model' not in st.session_state:
-        st.session_state.selected_model = "Gemini" # Default to Gemini
+        st.session_state.selected_model = "Gemini"  # Default to Gemini
 
     # Initial Groq client initialization (attempt once if not already set up)
     # Gemini client is only initialized upon button press.
     if st.session_state.groq_client is None:
-         # Attempt to initialize Groq client without affecting Gemini.
-         # Pass a dummy or None for Gemini key if init_clients expects it,
-         # or modify init_clients to handle separate initializations.
-         # For this change, assuming init_clients can be called for Groq only if Gemini key is None.
-         # This part might need init_clients to be more flexible or have a separate Groq init.
-         # For now, we'll rely on the button press to also initialize Groq if it wasn't.
-         # A cleaner way would be:
-         try:
-            temp_gemini_model_holder, st.session_state.groq_client = init_clients(api_key="DUMMY_FOR_GROQ_INIT", groq_api_key_override=None) # Pass dummy Gemini key
+        # Attempt to initialize Groq client without affecting Gemini.
+        # Pass a dummy or None for Gemini key if init_clients expects it,
+        # or modify init_clients to handle separate initializations.
+        # For this change, assuming init_clients can be called for Groq only if Gemini key is None.
+        # This part might need init_clients to be more flexible or have a separate Groq init.
+        # For now, we'll rely on the button press to also initialize Groq if it wasn't.
+        # A cleaner way would be:
+        try:
+            temp_gemini_model_holder, st.session_state.groq_client = init_clients(api_key="DUMMY_FOR_GROQ_INIT",
+                                                                                  groq_api_key_override=None)  # Pass dummy Gemini key
             if st.session_state.groq_client:
                 st.sidebar.info("Groq client ready.")
             else:
                 st.sidebar.warning("Groq client could not be initialized on load.")
-            del temp_gemini_model_holder # We don't want to use this dummy Gemini model
-            if not st.session_state.clients_initialized: # If Gemini isn't set up, clear its model
+            del temp_gemini_model_holder  # We don't want to use this dummy Gemini model
+            if not st.session_state.clients_initialized:  # If Gemini isn't set up, clear its model
                 st.session_state.gemini_model = None
-         except TypeError: # If init_clients now strictly requires api_key
-             st.sidebar.info("Groq client will be initialized when Gemini keys are applied.")
-
+        except TypeError:  # If init_clients now strictly requires api_key
+            st.sidebar.info("Groq client will be initialized when Gemini keys are applied.")
 
     # Sidebar for inputs
     with st.sidebar:
@@ -1181,34 +1246,36 @@ def main():
         st.session_state.selected_model = st.radio(
             "Select Model:",
             ("Gemini", "Ollama"),
-            index=0 if st.session_state.selected_model == "Gemini" else 1, # Set index based on current session state
+            index=0 if st.session_state.selected_model == "Gemini" else 1,  # Set index based on current session state
             help="Choose the model to use for generation."
         )
-        
+
         st.session_state.gemini_api_tokens_str = st.text_input(
             "Gemini API Tokens (comma-separated):",
             value=st.session_state.gemini_api_tokens_str,
             help="Enter one or more Gemini API tokens, separated by commas.",
             type="password"
         )
-        
+
         if st.button("Apply & Initialize Gemini Key(s)"):
             if st.session_state.gemini_api_tokens_str:
                 # Parse the string into a list of cleaned keys
                 raw_keys = st.session_state.gemini_api_tokens_str.split(',')
                 st.session_state.gemini_api_keys_list = [key.strip() for key in raw_keys if key.strip()]
-                
+
                 if st.session_state.gemini_api_keys_list:
                     st.session_state.current_gemini_key_index = 0
                     first_key_to_try = st.session_state.gemini_api_keys_list[0]
-                    
+
                     with st.spinner(f"Initializing Gemini with the first key from the list..."):
                         # Call init_clients with the first key
-                        st.session_state.gemini_model, st.session_state.groq_client = init_clients(api_key=first_key_to_try)
-                        
+                        st.session_state.gemini_model, st.session_state.groq_client = init_clients(
+                            api_key=first_key_to_try)
+
                         if st.session_state.gemini_model:
                             st.session_state.clients_initialized = True
-                            st.sidebar.success(f"Gemini initialized successfully using the first of {len(st.session_state.gemini_api_keys_list)} provided key(s).")
+                            st.sidebar.success(
+                                f"Gemini initialized successfully using the first of {len(st.session_state.gemini_api_keys_list)} provided key(s).")
                         else:
                             st.session_state.clients_initialized = False
                             st.sidebar.error("Failed to initialize Gemini with the first key. Please check the key.")
@@ -1268,10 +1335,11 @@ def main():
     if run_research and (base_paper_content or base_paper_url) and research_angle:
         # Check if Gemini client is initialized before running research, only if Gemini is selected
         if st.session_state.selected_model == "Gemini" and \
-           (not st.session_state.get('clients_initialized', False) or not st.session_state.gemini_model):
-            st.error("Gemini model selected, but client is not initialized. Please enter your API key(s) in the sidebar, click 'Apply & Initialize Gemini Key(s)', and ensure it's successful before starting research.")
+                (not st.session_state.get('clients_initialized', False) or not st.session_state.gemini_model):
+            st.error(
+                "Gemini model selected, but client is not initialized. Please enter your API key(s) in the sidebar, click 'Apply & Initialize Gemini Key(s)', and ensure it's successful before starting research.")
             st.stop()
-            
+
         # Progress tracking
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -1470,7 +1538,7 @@ def main():
                             if paper.get('raw_content'):
                                 st.write("**Summary:**")
                                 summary = paper['raw_content'][:300] + "..." if len(paper['raw_content']) > 300 else \
-                                paper['raw_content']
+                                    paper['raw_content']
                                 st.write(summary)
                             else:
                                 st.write(f"**Snippet:** {paper['snippet']}")

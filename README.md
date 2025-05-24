@@ -81,3 +81,6 @@ The core logic is implemented in ⁠ simple_streamlit_legal_research_assistant
 
 •⁠  ⁠All logic is contained in the root Streamlit app file: [⁠ simple_streamlit_legal_research_assistant.py ⁠](simple_streamlit_legal_research_assistant.py)
 •⁠
+
+
+Demo video: https://youtu.be/TTGei5Z58AI

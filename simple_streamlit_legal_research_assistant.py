@@ -54,7 +54,7 @@ def argument_extraction_agent_ollama(base_paper_content: str, research_angle: st
     Analyze the following legal research paper and the student's new research angle.
 
     Base Paper Content:
-    {base_paper_content[:3000]}  # Limit for API
+    {base_paper_content[:st.session_state.get('ollama_max_prompt_chars', 3000)]}  # Limit for API
 
     Student's Research Angle:
     {research_angle}
@@ -79,6 +79,19 @@ def argument_extraction_agent_ollama(base_paper_content: str, research_angle: st
         "prompt": prompt,
         "stream": False
     }
+
+    advanced_options_str = st.session_state.get('ollama_advanced_options_str', '{}')
+    if advanced_options_str and advanced_options_str.strip() != '{}':
+        try:
+            parsed_options = json.loads(advanced_options_str)
+            if isinstance(parsed_options, dict) and parsed_options:
+                payload['options'] = parsed_options
+            elif parsed_options:
+                st.warning(
+                    f"Ollama Argument Extraction: Invalid format for advanced options: Expected a non-empty JSON object. Options ignored. Input: {advanced_options_str}")
+        except json.JSONDecodeError:
+            st.warning(
+                f"Ollama Argument Extraction: Could not parse advanced options (invalid JSON): {advanced_options_str}. Proceeding without them.")
 
     error_response_template = {
         "core_thesis": "Error: Could not extract thesis from Ollama.",
@@ -503,6 +516,19 @@ def citation_chainer_agent_ollama(top_papers: List[Dict[str, Any]]) -> List[Dict
             "stream": False
         }
 
+        advanced_options_str = st.session_state.get('ollama_advanced_options_str', '{}')
+        if advanced_options_str and advanced_options_str.strip() != '{}':
+            try:
+                parsed_options = json.loads(advanced_options_str)
+                if isinstance(parsed_options, dict) and parsed_options:
+                    payload['options'] = parsed_options
+                elif parsed_options:
+                    st.warning(
+                        f"Ollama Citation Chainer: Invalid format for advanced options: Expected a non-empty JSON object. Options ignored. Input: {advanced_options_str}")
+            except json.JSONDecodeError:
+                st.warning(
+                    f"Ollama Citation Chainer: Could not parse advanced options (invalid JSON): {advanced_options_str}. Proceeding without them.")
+
         error_placeholder = {
             "title": f"Could not fetch citations for {paper.get('title', 'N/A')} via Ollama",
             "relevance_reason": "Ollama API error or parsing issue.",
@@ -667,7 +693,10 @@ def relevance_scorer_agent(groq_client, papers: List[Dict[str, Any]], research_c
     concept_terms = [c.lower() for c in research_context.get('key_concepts', [])]
     all_context_terms = angle_terms + concept_terms
 
-    for paper in papers:
+    limit = st.session_state.get('max_sources_to_analyze', 20)  # Default to 20 for relevance scoring
+    papers_to_score = papers if limit == 0 else papers[:limit]
+
+    for paper in papers_to_score:
         prompt = f"""
         Score this paper's relevance (0-100) for the research context:
 
@@ -762,7 +791,10 @@ def summary_extraction_agent_ollama(papers: List[Dict[str, Any]], research_conte
     ollama_api_url = "https://apaims2.0.vassarlabs.com/ollama1/api/generate"
     research_topic = research_context.get('new_angle', 'legal research')
 
-    for paper in papers[:10]:  # Limit for performance
+    # Limit is applied by the caller (summary_extraction_agent)
+    # So, summary_extraction_agent_ollama processes all papers passed to it.
+
+    for paper in papers:
         if not paper.get('raw_content') or len(paper.get('raw_content', '')) <= 100:
             paper['extracted_summary'] = paper.get('snippet', paper.get('title', 'No content for summary.'))[:200]
             paper['key_findings'] = paper.get('key_findings', ["Snippet used as summary due to short content."])
@@ -773,7 +805,7 @@ def summary_extraction_agent_ollama(papers: List[Dict[str, Any]], research_conte
         Extract a concise summary from this paper content related to: {research_topic}
 
         Title: {paper['title']}
-        Content: {paper['raw_content'][:1500]} # Max content length
+        Content: {paper['raw_content'][:st.session_state.get('ollama_max_prompt_chars', 1500)]} # Max content length
 
         Provide JSON output with these exact keys:
         - "main_argument": Main argument/thesis (1-2 sentences)
@@ -792,6 +824,19 @@ def summary_extraction_agent_ollama(papers: List[Dict[str, Any]], research_conte
             "prompt": prompt,
             "stream": False
         }
+
+        advanced_options_str = st.session_state.get('ollama_advanced_options_str', '{}')
+        if advanced_options_str and advanced_options_str.strip() != '{}':
+            try:
+                parsed_options = json.loads(advanced_options_str)
+                if isinstance(parsed_options, dict) and parsed_options:
+                    payload['options'] = parsed_options
+                elif parsed_options:
+                    st.warning(
+                        f"Ollama Summary Extraction: Invalid format for advanced options: Expected a non-empty JSON object. Options ignored. Input: {advanced_options_str}")
+            except json.JSONDecodeError:
+                st.warning(
+                    f"Ollama Summary Extraction: Could not parse advanced options (invalid JSON): {advanced_options_str}. Proceeding without them.")
 
         error_summary = paper.get('snippet', paper.get('title', 'Error: No summary available via Ollama'))[
                         :200] + " (Ollama Error)"
@@ -877,7 +922,11 @@ def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]], researc
     research_topic = research_context.get('new_angle', 'legal research')
     num_keys = len(st.session_state.gemini_api_keys_list)
 
-    for paper in papers[:10]:  # Limit for performance
+    # Determine the list of papers to process based on the session state limit
+    limit = st.session_state.get('max_sources_to_analyze', 10)  # Default to 10 for summary extraction
+    papers_to_process = papers if limit == 0 else papers[:limit]
+
+    for paper in papers_to_process:
         if not paper.get('raw_content') or len(paper['raw_content']) <= 100:
             paper['extracted_summary'] = paper.get('snippet', paper.get('title', 'No content for summary.'))[:200]
             paper['key_findings'] = paper.get('key_findings', [])
@@ -960,12 +1009,22 @@ def case_analysis_agent_ollama(papers: List[Dict[str, Any]]) -> List[Dict[str, A
         'court_findings': "Ollama Error"
     }
 
+    analysis_limit = st.session_state.get('max_sources_to_analyze', 0)  # 0 means all case law papers
+    processed_case_law_count = 0
+
     for paper in papers:
         if paper.get('source_type') == 'case_law':
+            if analysis_limit != 0 and processed_case_law_count >= analysis_limit:
+                # Add placeholder if limit is reached and this paper won't be processed
+                paper.update({k: paper.get(k, "Not analyzed due to limit.") for k in
+                              ['case_facts', 'legal_issues', 'arguments', 'judgment', 'court_findings']})
+                continue
+
             content_to_analyze = paper.get('raw_content', '') if len(paper.get('raw_content', '')) > 200 else paper.get(
                 'snippet', '')
             if not content_to_analyze: content_to_analyze = paper.get('title', '')
-            truncated_content = content_to_analyze[:2000]  # Ollama context limit
+            truncated_content = content_to_analyze[
+                                :st.session_state.get('ollama_max_prompt_chars', 2000)]  # Ollama context limit
 
             prompt = f"""
             Analyze the following legal case based on its title and content.
@@ -992,6 +1051,19 @@ def case_analysis_agent_ollama(papers: List[Dict[str, Any]]) -> List[Dict[str, A
                 "prompt": prompt,
                 "stream": False
             }
+
+        advanced_options_str = st.session_state.get('ollama_advanced_options_str', '{}')
+        if advanced_options_str and advanced_options_str.strip() != '{}':
+            try:
+                parsed_options = json.loads(advanced_options_str)
+                if isinstance(parsed_options, dict) and parsed_options:
+                    payload['options'] = parsed_options
+                elif parsed_options:
+                    st.warning(
+                        f"Ollama Case Analysis: Invalid format for advanced options: Expected a non-empty JSON object. Options ignored. Input: {advanced_options_str}")
+            except json.JSONDecodeError:
+                st.warning(
+                    f"Ollama Case Analysis: Could not parse advanced options (invalid JSON): {advanced_options_str}. Proceeding without them.")
 
             try:
                 response = requests.post(ollama_api_url, json=payload, timeout=60)
@@ -1042,7 +1114,10 @@ def case_analysis_agent_ollama(papers: List[Dict[str, Any]]) -> List[Dict[str, A
             except Exception as e:
                 st.error(f"Unexpected error in Ollama Case Analysis: {e} for paper {paper.get('title')}")
                 paper.update(default_ollama_error_values)
+
+            processed_case_law_count += 1  # Increment after processing attempt
         else:
+            # Ensure non-case_law papers also have these fields if expected by UI, though typically not accessed.
             paper.update({k: paper.get(k, "N/A - Not a case") for k in
                           ['case_facts', 'legal_issues', 'arguments', 'judgment', 'court_findings']})
 
@@ -1089,8 +1164,22 @@ def case_analysis_agent(gemini_model, papers: List[Dict[str, Any]]) -> List[Dict
 
     num_keys = len(st.session_state.gemini_api_keys_list)
 
+    analysis_limit = st.session_state.get('max_sources_to_analyze', 0)  # 0 means all case law papers
+    processed_case_law_count = 0
+
     for paper in papers:
         if paper.get('source_type') == 'case_law':
+            if analysis_limit != 0 and processed_case_law_count >= analysis_limit:
+                # Add placeholder if limit is reached and this paper won't be processed
+                paper.update({
+                    'case_facts': "Not analyzed due to limit.",
+                    'legal_issues': ["Not analyzed due to limit."],
+                    'arguments': {"plaintiff": "Not analyzed due to limit.", "defendant": "Not analyzed due to limit."},
+                    'judgment': "Not analyzed due to limit.",
+                    'court_findings': "Not analyzed due to limit."
+                })
+                continue
+
             default_error_values = {
                 'case_facts': "Failed to analyze after trying all keys.",
                 'legal_issues': ["Failed to analyze after trying all keys."],
@@ -1178,6 +1267,8 @@ def case_analysis_agent(gemini_model, papers: List[Dict[str, Any]]) -> List[Dict
             if not processed_successfully:
                 paper.update(default_error_values)
 
+            processed_case_law_count += 1  # Increment after processing attempt (successful or not)
+
     return papers
 
 
@@ -1215,6 +1306,12 @@ def main():
         st.session_state.groq_client = None
     if 'selected_model' not in st.session_state:
         st.session_state.selected_model = "Gemini"  # Default to Gemini
+    if 'max_sources_to_analyze' not in st.session_state:
+        st.session_state.max_sources_to_analyze = 10  # Default value
+    if 'ollama_max_prompt_chars' not in st.session_state:
+        st.session_state.ollama_max_prompt_chars = 2500  # Default value (e.g., 2500 characters)
+    if 'ollama_advanced_options_str' not in st.session_state:
+        st.session_state.ollama_advanced_options_str = "{}"  # Default to an empty JSON object string
 
     # Initial Groq client initialization (attempt once if not already set up)
     # Gemini client is only initialized upon button press.
@@ -1249,6 +1346,24 @@ def main():
             index=0 if st.session_state.selected_model == "Gemini" else 1,  # Set index based on current session state
             help="Choose the model to use for generation."
         )
+
+        # Ollama Specific Configuration
+        if st.session_state.selected_model == "Ollama":
+            st.subheader("Ollama Specific Configuration")
+            st.session_state.ollama_max_prompt_chars = st.number_input(
+                "Max content length for Ollama prompts (characters):",
+                min_value=500,
+                max_value=8000,
+                value=st.session_state.get('ollama_max_prompt_chars', 2500),
+                step=100,
+                help="Maximum number of characters from paper content to include in prompts sent to Ollama. Adjust based on model context window and desired detail."
+            )
+            st.session_state.ollama_advanced_options_str = st.text_area(
+                "Additional Ollama options (JSON format):",
+                value=st.session_state.get('ollama_advanced_options_str', "{}"),
+                height=100,
+                help='Enter a JSON string for Ollama options, e.g., `{"temperature": 0.7, "num_predict": 100}`. These will be passed in the "options" field of the API request.'
+            )
 
         st.session_state.gemini_api_tokens_str = st.text_input(
             "Gemini API Tokens (comma-separated):",
@@ -1323,6 +1438,14 @@ def main():
             "Citation Style:",
             ["APA", "Bluebook", "OSCOLA", "ILI"],
             help="APA (7th ed.), Bluebook (21st ed.), OSCOLA (4th ed.), ILI format"
+        )
+
+        st.session_state.max_sources_to_analyze = st.number_input(
+            "Max sources to analyze (0 for all found by crawler):",
+            min_value=0,
+            value=st.session_state.get('max_sources_to_analyze', 10),
+            step=1,
+            help="Maximum number of web search results to pass to downstream analysis agents (summaries, cases, relevance scoring). 0 means all (up to internal limits of those agents)."
         )
 
         # Run research button

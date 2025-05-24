@@ -1555,11 +1555,11 @@ def main():
 
                         # Citations in multiple formats
                         st.divider()
-                        with st.expander("View Citations"):
-                            st.code(f"APA: {format_citation(paper, 'APA')}", language="text")
-                            st.code(f"Bluebook: {format_citation(paper, 'Bluebook')}", language="text")
-                            st.code(f"OSCOLA: {format_citation(paper, 'OSCOLA')}", language="text")
-                            st.code(f"ILI: {format_citation(paper, 'ILI')}", language="text")
+                        st.markdown("##### Citations")  # New sub-header for citations
+                        st.code(f"APA: {format_citation(paper, 'APA')}", language="text")
+                        st.code(f"Bluebook: {format_citation(paper, 'Bluebook')}", language="text")
+                        st.code(f"OSCOLA: {format_citation(paper, 'OSCOLA')}", language="text")
+                        st.code(f"ILI: {format_citation(paper, 'ILI')}", language="text")
 
             if case_law:
                 st.markdown("### ⚖️ Legal Judgments & Case Law")

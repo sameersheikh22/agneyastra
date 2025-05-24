@@ -1,3 +1,6 @@
+import io
+
+import PyPDF2
 import streamlit as st
 import requests
 from typing import List, Dict, Any
@@ -7,6 +10,7 @@ from urllib.parse import urlparse, quote
 import time
 from datetime import datetime
 import google.generativeai as genai
+from bs4 import BeautifulSoup
 from groq import Groq
 from google.api_core import exceptions as google_exceptions
 
@@ -1498,7 +1502,44 @@ def main():
 
             # If URL provided, note that actual fetching would require additional implementation
             if base_paper_url and not base_paper_content:
-                base_paper_content = f"[Content from {base_paper_url}]"
+                try:
+                    headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'}
+                    response = requests.get(base_paper_url, headers=headers, timeout=30)
+
+                    if base_paper_url.lower().endswith('.pdf'):
+                        # Handle PDF files
+                        with io.BytesIO(response.content) as pdf_file:
+                            pdf_reader = PyPDF2.PdfReader(pdf_file)
+                            base_paper_content = ' '.join(page.extract_text() for page in pdf_reader.pages)
+                    else:
+                        # Handle HTML content
+                        soup = BeautifulSoup(response.text, 'html.parser')
+
+                        # Remove script and style elements
+                        for script in soup(["script", "style"]):
+                            script.decompose()
+
+                        # Extract main content - prioritize article/main tags
+                        main_content = soup.find(['article', 'main', 'div[role="main"]'])
+                        if main_content:
+                            base_paper_content = main_content.get_text(separator=' ', strip=True)
+                        else:
+                            # Fallback to body content
+                            base_paper_content = soup.get_text(separator=' ', strip=True)
+
+                    # Clean up extracted text
+                    base_paper_content = ' '.join(base_paper_content.split())
+
+                    if len(base_paper_content) < 100:
+                        st.warning(
+                            f"The extracted content from {base_paper_url} seems too short. Please verify the URL or paste the content directly.")
+
+                except requests.RequestException as e:
+                    st.error(f"Error fetching content from URL: {str(e)}")
+                    base_paper_content = ""
+                except Exception as e:
+                    st.error(f"Error processing content from URL: {str(e)}")
+                    base_paper_content = ""
 
             extracted_args = argument_extraction_agent(
                 st.session_state.gemini_model,

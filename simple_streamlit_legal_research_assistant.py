@@ -29,6 +29,8 @@ def init_clients(api_key: str, groq_api_key_override: str = None):
         st.sidebar.error(f"Gemini Init Error: {e}") # Display error in sidebar for visibility
         gemini_model = None
     
+
+
     # Groq
     # Use override if provided, else use the hardcoded one.
     # In a real app, this hardcoded key should also be handled via secrets or input.
@@ -721,6 +723,92 @@ def case_analysis_agent(gemini_model, papers: List[Dict[str, Any]]) -> List[Dict
                  # This ensures that if all attempts fail for a paper, it gets the error values
                  paper.update(default_error_values)
                  
+    return papers
+
+
+# Agent for Case Analysis
+def case_analysis_agent(gemini_model, papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Analyzes legal case documents from a list of papers to extract structured information.
+
+    For each paper identified as 'case_law', this function uses a Gemini model
+    to extract facts, legal issues, arguments from both sides, the judgment,
+    and court findings. It updates the paper dictionary with this information.
+    """
+    for paper in papers:
+        if paper.get('source_type') == 'case_law':
+            try:
+                # Determine content to analyze, prioritizing raw_content
+                content_to_analyze = ""
+                raw_content = paper.get('raw_content', '')
+                snippet_content = paper.get('snippet', '')
+
+                if raw_content and len(raw_content) > 200:
+                    content_to_analyze = raw_content
+                elif snippet_content:
+                    content_to_analyze = snippet_content
+                else:
+                    content_to_analyze = paper.get('title', '') # Fallback to title if no content
+
+                # Truncate content to avoid overly long prompts
+                truncated_content = content_to_analyze[:2000]
+
+                prompt = f"""
+                Analyze the following legal case based on its title and content.
+                Provide a JSON response with these exact keys: "case_facts", "legal_issues", "arguments" (as a dict with "plaintiff" and "defendant"), "judgment", "court_findings".
+
+                Title: {paper.get('title', 'N/A')}
+                Content: {truncated_content}
+
+                If specific details are not found, use "Not available" or an empty list/dictionary as appropriate for the field type.
+
+                Example JSON format:
+                {{
+                    "case_facts": "Summary of facts...",
+                    "legal_issues": ["Issue 1", "Issue 2"],
+                    "arguments": {{
+                        "plaintiff": "Plaintiff's arguments...",
+                        "defendant": "Defendant's arguments..."
+                    }},
+                    "judgment": "The court decided...",
+                    "court_findings": "The court found that..."
+                }}
+                """
+
+                response = gemini_model.generate_content(prompt)
+                
+                # Clean response text if needed (though Gemini usually provides clean JSON with proper prompting)
+                response_text = response.text.strip()
+                if response_text.startswith("```json"):
+                    response_text = response_text[7:]
+                if response_text.endswith("```"):
+                    response_text = response_text[:-3]
+                
+                analysis_results = json.loads(response_text)
+
+                paper['case_facts'] = analysis_results.get('case_facts', "Not available")
+                paper['legal_issues'] = analysis_results.get('legal_issues', [])
+                paper['arguments'] = analysis_results.get('arguments', {"plaintiff": "Not available", "defendant": "Not available"})
+                paper['judgment'] = analysis_results.get('judgment', "Not available")
+                paper['court_findings'] = analysis_results.get('court_findings', "Not available")
+
+            except json.JSONDecodeError as e:
+                st.warning(f"Error decoding JSON for paper '{paper.get('title', 'Unknown Title')}': {e}. Raw response: {response_text[:200]}")
+                # Set defaults if parsing fails to ensure keys exist if expected later
+                paper['case_facts'] = paper.get('case_facts', "Not available after parsing error")
+                paper['legal_issues'] = paper.get('legal_issues', [])
+                paper['arguments'] = paper.get('arguments', {"plaintiff": "Not available", "defendant": "Not available"})
+                paper['judgment'] = paper.get('judgment', "Not available after parsing error")
+                paper['court_findings'] = paper.get('court_findings', "Not available after parsing error")
+            except Exception as e:
+                st.warning(f"Error analyzing case '{paper.get('title', 'Unknown Title')}': {e}")
+                # Set defaults if API call or other processing fails
+                paper['case_facts'] = paper.get('case_facts', "Not available after API/processing error")
+                paper['legal_issues'] = paper.get('legal_issues', [])
+                paper['arguments'] = paper.get('arguments', {"plaintiff": "Not available", "defendant": "Not available"})
+                paper['judgment'] = paper.get('judgment', "Not available after API/processing error")
+                paper['court_findings'] = paper.get('court_findings', "Not available after API/processing error")
+                
     return papers
 
 

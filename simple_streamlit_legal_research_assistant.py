@@ -1240,6 +1240,10 @@ def case_analysis_agent(gemini_model, papers: List[Dict[str, Any]]) -> List[Dict
                     paper['legal_issues'] = analysis_results.get('legal_issues', [])
                     paper['arguments'] = analysis_results.get('arguments', {"plaintiff": "Not available",
                                                                             "defendant": "Not available"})
+                    # Ensure 'arguments' is a dict with 'plaintiff' and 'defendant' keys
+                    if not isinstance(paper['arguments'], dict) or \
+                       not ('plaintiff' in paper['arguments'] and 'defendant' in paper['arguments']):
+                        paper['arguments'] = {"plaintiff": "Not available", "defendant": "Not available"}
                     paper['judgment'] = analysis_results.get('judgment', "Not available")
                     paper['court_findings'] = analysis_results.get('court_findings', "Not available")
                     processed_successfully = True
@@ -1748,6 +1752,8 @@ def main():
                         # Arguments
                         st.markdown("**3. Arguments:**")
                         arguments = case.get('arguments', {})
+                        if not isinstance(arguments, dict):
+                            arguments = {"plaintiff": "Error: Invalid argument data", "defendant": "Error: Invalid argument data"}
                         col1, col2 = st.columns(2)
                         with col1:
                             st.write("*Plaintiff/Appellant:*")

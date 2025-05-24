@@ -520,7 +520,11 @@ def main():
 
         # Search parameters
         num_results = st.slider("Results per search:", 3, 10, 5)
-        citation_style = st.selectbox("Citation Style:", ["APA", "Bluebook", "Custom"])
+        citation_style = st.selectbox(
+            "Citation Style:",
+            ["APA", "Bluebook", "OSCOLA", "ILI"],
+            help="APA (7th ed.), Bluebook (21st ed.), OSCOLA (4th ed.), ILI format"
+        )
 
         # Run research button
         run_research = st.button("🔍 Start Research", type="primary", use_container_width=True)
@@ -534,6 +538,10 @@ def main():
         progress_bar = st.progress(0)
         status_text = st.empty()
 
+        # Create a container for thoughts and actions
+        with st.expander("🧠 Agent Thoughts & Actions", expanded=True):
+            thoughts_container = st.container()
+
         # Results containers
         col1, col2 = st.columns([2, 1])
 
@@ -546,9 +554,18 @@ def main():
             summary_container = st.container()
 
         # Execute research pipeline
+        with thoughts_container:
+            st.markdown("### 🔍 Research Process")
+
         with st.spinner("Analyzing base paper..."):
             status_text.text("Agent 1: Extracting arguments...")
             progress_bar.progress(20)
+
+            with thoughts_container:
+                st.write("**Agent 1 - Argument Extraction:**")
+                st.write("- Analyzing base paper content")
+                st.write("- Identifying core thesis and legal concepts")
+                st.write("- Understanding the new research angle")
 
             # If URL provided, note that actual fetching would require additional implementation
             if base_paper_url and not base_paper_content:
@@ -567,9 +584,18 @@ def main():
                 if extracted_args.get('key_concepts'):
                     st.write(f"**Key Concepts:** {', '.join(extracted_args.get('key_concepts', []))}")
 
+            with thoughts_container:
+                st.success(f"✓ Extracted {len(extracted_args.get('key_concepts', []))} key concepts")
+
         with st.spinner("Generating search keywords..."):
             status_text.text("Agent 2: Generating keywords...")
             progress_bar.progress(40)
+
+            with thoughts_container:
+                st.write("\n**Agent 2 - Keyword Generator:**")
+                st.write("- Creating keyword permutations based on extracted concepts")
+                st.write("- Simulating 'hit and try' search approach")
+                st.write("- Generating broad and specific search terms")
 
             keywords = keyword_generator_agent(
                 st.session_state.groq_client,
@@ -582,24 +608,59 @@ def main():
                     for kw in keywords[:10]:
                         st.write(f"• {kw}")
 
+            with thoughts_container:
+                st.success(f"✓ Generated {len(keywords)} search keywords")
+
         with st.spinner("Searching sources..."):
             status_text.text("Agent 3: Crawling sources...")
             progress_bar.progress(60)
 
+            with thoughts_container:
+                st.write("\n**Agent 3 - Source Crawler:**")
+                st.write("- Searching SSRN and JSTOR for scholarly articles")
+                st.write("- Looking for relevant case law and judgments")
+                st.write("- Finding recent legal news and developments")
+                st.write(f"- Using top {min(5, len(keywords))} keywords for search")
+
             search_results = source_crawler_agent(keywords, num_results)
+
+            with thoughts_container:
+                source_breakdown = {}
+                for r in search_results:
+                    source_type = r.get('source_type', 'unknown')
+                    source_breakdown[source_type] = source_breakdown.get(source_type, 0) + 1
+
+                st.success(f"✓ Found {len(search_results)} total sources:")
+                for stype, count in source_breakdown.items():
+                    st.write(f"  - {stype}: {count} sources")
 
         with st.spinner("Analyzing citations..."):
             status_text.text("Agent 4: Chaining citations...")
             progress_bar.progress(70)
+
+            with thoughts_container:
+                st.write("\n**Agent 4 - Citation Chainer:**")
+                st.write("- Analyzing top papers for citation opportunities")
+                st.write("- Identifying landmark cases and seminal works")
+                st.write("- Building citation network")
 
             citation_suggestions = citation_chainer_agent(
                 st.session_state.gemini_model,
                 search_results[:5]
             )
 
-        with st.spinner("Scoring relevance..."):
-            status_text.text("Agent 5: Scoring papers...")
+            with thoughts_container:
+                st.success(f"✓ Generated {len(citation_suggestions)} citation suggestions")
+
+        with st.spinner("Extracting summaries and analyzing cases..."):
+            status_text.text("Agent 5: Extracting summaries...")
             progress_bar.progress(80)
+
+            with thoughts_container:
+                st.write("\n**Agent 5 - Summary & Case Analysis:**")
+                st.write("- Extracting main arguments from papers")
+                st.write("- Analyzing case law for facts, issues, and judgments")
+                st.write("- Identifying key findings")
 
             # Combine all results
             all_papers = search_results
@@ -611,6 +672,25 @@ def main():
                 extracted_args
             )
 
+            # Analyze cases
+            all_papers = case_analysis_agent(
+                st.session_state.gemini_model,
+                all_papers
+            )
+
+            with thoughts_container:
+                st.success("✓ Completed content extraction")
+
+        with st.spinner("Scoring relevance..."):
+            status_text.text("Agent 6: Scoring papers...")
+            progress_bar.progress(90)
+
+            with thoughts_container:
+                st.write("\n**Agent 6 - Relevance Scorer:**")
+                st.write("- Scoring each source based on relevance to research angle")
+                st.write("- Considering keyword matches and content alignment")
+                st.write("- Ranking sources by score")
+
             # Score and rank
             scored_papers = relevance_scorer_agent(
                 st.session_state.groq_client,
@@ -618,7 +698,15 @@ def main():
                 extracted_args
             )
 
-        progress_bar.progress(90)
+            with thoughts_container:
+                score_distribution = {
+                    "High (80-100)": len([p for p in scored_papers if p.get('relevance_score', 0) >= 80]),
+                    "Medium (60-79)": len([p for p in scored_papers if 60 <= p.get('relevance_score', 0) < 80]),
+                    "Low (40-59)": len([p for p in scored_papers if 40 <= p.get('relevance_score', 0) < 60]),
+                }
+                st.success("✓ Relevance scoring complete:")
+                for range_name, count in score_distribution.items():
+                    st.write(f"  - {range_name}: {count} sources")
 
         # Display results
         progress_bar.progress(100)
@@ -659,25 +747,80 @@ def main():
                             if "pdf" in paper['url'].lower():
                                 st.caption("📄 PDF Available")
 
-                        # Citation
-                        st.code(format_citation(paper, citation_style), language="text")
+                        # Citations in multiple formats
+                        st.divider()
+                        with st.expander("View Citations"):
+                            st.code(f"APA: {format_citation(paper, 'APA')}", language="text")
+                            st.code(f"Bluebook: {format_citation(paper, 'Bluebook')}", language="text")
+                            st.code(f"OSCOLA: {format_citation(paper, 'OSCOLA')}", language="text")
+                            st.code(f"ILI: {format_citation(paper, 'ILI')}", language="text")
 
             if case_law:
                 st.markdown("### ⚖️ Legal Judgments & Case Law")
                 for idx, case in enumerate(case_law[:5]):
                     with st.expander(f"⚖️ {case['title'][:80]}... (Score: {case.get('relevance_score', 'N/A')})"):
-                        col1, col2 = st.columns([3, 1])
+                        # Main case information
+                        st.markdown("#### Case Analysis")
 
+                        # Facts
+                        st.markdown("**1. Facts:**")
+                        st.write(case.get('case_facts', 'Facts not available'))
+
+                        # Legal Issues
+                        st.markdown("**2. Legal Issues:**")
+                        issues = case.get('legal_issues', [])
+                        if issues and isinstance(issues, list):
+                            for issue in issues:
+                                st.write(f"• {issue}")
+                        else:
+                            st.write("Legal issues not available")
+
+                        # Arguments
+                        st.markdown("**3. Arguments:**")
+                        arguments = case.get('arguments', {})
+                        col1, col2 = st.columns(2)
                         with col1:
-                            st.write(f"**Case Summary:** {case['snippet']}")
-                            st.write(f"**Relevance:** {case.get('relevance_reason', 'N/A')}")
-                            st.write(f"**Legal Principles:** {case.get('key_insights', 'N/A')}")
-
+                            st.write("*Plaintiff/Appellant:*")
+                            st.write(arguments.get('plaintiff', 'Not available'))
                         with col2:
-                            st.link_button("View Case", case['url'], use_container_width=True)
+                            st.write("*Defendant/Respondent:*")
+                            st.write(arguments.get('defendant', 'Not available'))
 
-                        # Legal citation
-                        st.code(format_citation(case, "Bluebook"), language="text")
+                        # Judgment
+                        st.markdown("**4. Final Judgment:**")
+                        st.write(case.get('judgment', 'Judgment not available'))
+
+                        # Court Findings
+                        st.markdown("**5. Court Findings:**")
+                        st.write(case.get('court_findings', 'Court findings not available'))
+
+                        # Additional info
+                        st.divider()
+                        st.markdown("**Additional Information:**")
+                        st.write(f"*Relevance:* {case.get('relevance_reason', 'N/A')}")
+                        st.write(f"*Source:* {case['source']} | *Keyword:* {case.get('keyword_used', 'N/A')}")
+
+                        # View source button
+                        st.link_button("View Full Case", case['url'], use_container_width=True)
+
+                        # Citations in all formats
+                        st.divider()
+                        st.markdown("**Citations:**")
+
+                        # Create tabs for different citation styles
+                        tab1, tab2, tab3, tab4 = st.tabs(["APA", "Bluebook", "OSCOLA", "ILI"])
+
+                        with tab1:
+                            st.code(format_citation(case, "APA"), language="text")
+
+                        with tab2:
+                            st.code(format_citation(case, "Bluebook"), language="text")
+
+                        with tab3:
+                            st.code(format_citation(case, "OSCOLA"), language="text")
+
+                        with tab4:
+                            st.code(format_citation(case, "ILI"), language="text")
 
             if news_articles:
                 st.markdown("### 📰 Recent Legal News & Developments")

@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 import google.generativeai as genai
 from groq import Groq
+from google.api_core import exceptions as google_exceptions
 
 # Page config
 st.set_page_config(
@@ -18,21 +19,46 @@ st.set_page_config(
 
 
 # Initialize API clients
-def init_clients():
-    """Initialize API clients with provided keys"""
-    # Gemini
-    genai.configure(api_key="AIzaSyBvaCZAq2bJkLgdA1kuY_IBLE6TkzP7k1k")
-    gemini_model = genai.GenerativeModel('gemini-2.0-flash')
-
+def init_clients(api_key: str, groq_api_key_override: str = None):
+    """Initialize API clients with provided keys. Gemini API key is mandatory."""
+    gemini_model = None
+    try:
+        genai.configure(api_key=api_key)
+        gemini_model = genai.GenerativeModel('gemini-2.0-flash')
+    except Exception as e:
+        st.sidebar.error(f"Gemini Init Error: {e}") # Display error in sidebar for visibility
+        gemini_model = None
+    
     # Groq
-    groq_client = Groq(api_key="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")
-
+    # Use override if provided, else use the hardcoded one.
+    # In a real app, this hardcoded key should also be handled via secrets or input.
+    final_groq_key = groq_api_key_override if groq_api_key_override else "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"
+    groq_client = None
+    if final_groq_key:
+        try:
+            groq_client = Groq(api_key=final_groq_key)
+        except Exception as e:
+            st.sidebar.warning(f"Groq Init Error: {e}")
+            groq_client = None
+    else:
+        st.sidebar.warning("Groq API key not available.")
+        
     return gemini_model, groq_client
 
 
 # Agent 1: Argument Extraction Agent
 def argument_extraction_agent(gemini_model, base_paper_content: str, research_angle: str) -> Dict[str, str]:
-    """Extract core thesis and identify new research direction"""
+    """Extract core thesis and identify new research direction with API key rotation."""
+    
+    if not st.session_state.get('gemini_api_keys_list') or not isinstance(st.session_state.gemini_api_keys_list, list) or not st.session_state.gemini_api_keys_list:
+        st.error("Gemini API keys not configured or empty. Please set them in the sidebar.")
+        return {
+            "core_thesis": "Error: API keys not configured", 
+            "key_concepts": [], 
+            "new_angle": research_angle, 
+            "research_directions": ["Error: API keys not configured"]
+        }
+
     prompt = f"""
     Analyze the following legal research paper and the student's new research angle.
 
@@ -57,39 +83,78 @@ def argument_extraction_agent(gemini_model, base_paper_content: str, research_an
     }}
     """
 
-    try:
-        response = gemini_model.generate_content(prompt)
-        # Clean response text
-        response_text = response.text.strip()
-        # Remove markdown code blocks if present
-        if "```json" in response_text:
-            response_text = response_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in response_text:
-            response_text = response_text.split("```")[1].split("```")[0].strip()
+    num_keys = len(st.session_state.gemini_api_keys_list)
+    for attempt in range(num_keys):
+        current_key_index = st.session_state.current_gemini_key_index
+        current_api_key = st.session_state.gemini_api_keys_list[current_key_index]
 
-        result = json.loads(response_text)
-        return result
-    except Exception as e:
-        # Dynamic fallback based on actual content
-        angle_words = research_angle.split()[:10]
-        content_words = base_paper_content.split()[:50]
+        try:
+            genai.configure(api_key=current_api_key, transport='rest')
+            # Use the gemini_model instance passed, assuming genai.configure updates its underlying client.
+            # If issues persist, one might need to re-initialize:
+            # current_model_for_attempt = genai.GenerativeModel('gemini-2.0-flash')
+            # response = current_model_for_attempt.generate_content(prompt)
+            response = gemini_model.generate_content(prompt) 
+            
+            response_text = response.text.strip()
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+            
+            result = json.loads(response_text)
+            return result # Success
 
-        # Extract key terms from the input
-        key_terms = []
-        for word in angle_words + content_words:
-            if len(word) > 4 and word.lower() not in ['this', 'that', 'these', 'those', 'which', 'where', 'when']:
-                key_terms.append(word)
+        except google_exceptions.ResourceExhausted as e:
+            st.warning(f"Rate limit hit with key ending: ...{current_api_key[-4:]} (Attempt {attempt + 1}/{num_keys}). Trying next key.")
+            st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
+            if attempt == num_keys - 1:
+                st.error("All Gemini API keys are currently rate-limited. Please try again later or add new keys.")
+                # Fallback to original dynamic content if all keys fail
+                angle_words = research_angle.split()[:10]
+                content_words = base_paper_content.split()[:50]
+                key_terms = [word for word in angle_words + content_words if len(word) > 4 and word.lower() not in ['this', 'that', 'these', 'those', 'which', 'where', 'when']]
+                return {
+                    "core_thesis": f"Analysis of legal aspects related to {' '.join(angle_words[:5])} (All keys rate-limited)",
+                    "key_concepts": list(set(key_terms[:5])) if key_terms else ["legal analysis", "research", "regulation"],
+                    "new_angle": research_angle,
+                    "research_directions": [
+                        f"Comparative analysis of {angle_words[0] if angle_words else 'topic'} (All keys rate-limited)",
+                        f"Legal framework for {' '.join(angle_words[:3]) if angle_words else 'subject matter'} (All keys rate-limited)"
+                    ]
+                }
+        except Exception as e:
+            st.error(f"An unexpected error occurred with key ...{current_api_key[-4:]} (Attempt {attempt + 1}/{num_keys}): {e}")
+            st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys # Rotate key on other errors too
+            if attempt == num_keys - 1:
+                # Fallback to original dynamic content if all keys fail
+                angle_words = research_angle.split()[:10]
+                content_words = base_paper_content.split()[:50]
+                key_terms = [word for word in angle_words + content_words if len(word) > 4 and word.lower() not in ['this', 'that', 'these', 'those', 'which', 'where', 'when']]
+                return {
+                    "core_thesis": f"Analysis of legal aspects related to {' '.join(angle_words[:5])} (Error after trying all keys)",
+                    "key_concepts": list(set(key_terms[:5])) if key_terms else ["legal analysis", "research", "regulation"],
+                    "new_angle": research_angle,
+                    "research_directions": [
+                        f"Comparative analysis of {angle_words[0] if angle_words else 'topic'} (Error after trying all keys)",
+                        f"Legal framework for {' '.join(angle_words[:3]) if angle_words else 'subject matter'} (Error after trying all keys)"
+                    ]
+                }
+    
+    # Fallback if loop somehow finishes without returning (should be caught by last attempt logic)
+    angle_words = research_angle.split()[:10]
+    content_words = base_paper_content.split()[:50]
 
-        return {
-            "core_thesis": f"Analysis of legal aspects related to {' '.join(angle_words[:5])}",
-            "key_concepts": list(set(key_terms[:5])) if key_terms else ["legal analysis", "research", "regulation"],
-            "new_angle": research_angle,
-            "research_directions": [
-                f"Comparative analysis of {angle_words[0] if angle_words else 'topic'}",
-                f"Legal framework for {' '.join(angle_words[:3]) if angle_words else 'subject matter'}"
-            ]
-        }
-
+    key_terms = [word for word in angle_words + content_words if len(word) > 4 and word.lower() not in ['this', 'that', 'these', 'those', 'which', 'where', 'when']]
+    return {
+        "core_thesis": f"Analysis of legal aspects related to {' '.join(angle_words[:5])} (Failed to process with API)",
+        "key_concepts": list(set(key_terms[:5])) if key_terms else ["legal analysis", "research", "regulation"],
+        "new_angle": research_angle,
+        "research_directions": [
+            f"Comparative analysis of {angle_words[0] if angle_words else 'topic'} (Failed to process with API)",
+            f"Legal framework for {' '.join(angle_words[:3]) if angle_words else 'subject matter'} (Failed to process with API)"
+        ]
+    }
 
 # Agent 2: Keyword Generator Agent
 def keyword_generator_agent(groq_client, extracted_args: Dict[str, str], seed_keywords: List[str] = []) -> List[str]:
@@ -297,8 +362,14 @@ def source_crawler_agent(keywords: List[str], num_results: int = 5) -> List[Dict
 
 # Agent 4: Citation Chainer Agent
 def citation_chainer_agent(gemini_model, top_papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Extract and follow citation trails"""
+    """Extract and follow citation trails with API key rotation."""
+
+    if not st.session_state.get('gemini_api_keys_list') or not isinstance(st.session_state.gemini_api_keys_list, list) or not st.session_state.gemini_api_keys_list:
+        st.error("Citation Chainer: Gemini API keys not configured or empty.")
+        return []
+
     chained_citations = []
+    num_keys = len(st.session_state.gemini_api_keys_list)
 
     for paper in top_papers[:3]:  # Limit for performance
         prompt = f"""
@@ -314,16 +385,51 @@ def citation_chainer_agent(gemini_model, top_papers: List[Dict[str, Any]]) -> Li
 
         Format as JSON list with keys: title, relevance_reason, search_terms
         """
+        
+        processed_successfully = False
+        for attempt in range(num_keys):
+            current_key_index = st.session_state.current_gemini_key_index
+            current_api_key = st.session_state.gemini_api_keys_list[current_key_index]
 
-        try:
-            response = gemini_model.generate_content(prompt)
-            citations = json.loads(response.text)
-            for citation in citations:
-                citation['parent_paper'] = paper['title']
-                chained_citations.append(citation)
-        except:
-            pass
+            try:
+                genai.configure(api_key=current_api_key, transport='rest')
+                # As before, assuming genai.configure updates the existing model instance.
+                # If not, re-initialize: current_model_for_attempt = genai.GenerativeModel('gemini-2.0-flash')
+                response = gemini_model.generate_content(prompt)
+                
+                response_text = response.text.strip()
+                if response_text.startswith("```json"):
+                    response_text = response_text.split("```json")[1].split("```")[0].strip()
+                elif response_text.startswith("```"): # Handle cases where only ``` is present
+                    response_text = response_text.split("```")[1].split("```")[0].strip()
+                
+                citations = json.loads(response_text)
+                for citation in citations:
+                    citation['parent_paper'] = paper['title']
+                    chained_citations.append(citation)
+                processed_successfully = True
+                break # Success for this paper, move to next paper
 
+            except google_exceptions.ResourceExhausted as e:
+                st.warning(f"Rate limit hit for Citation Chainer with key ...{current_api_key[-4:]} (Paper: {paper.get('title', 'N/A')}, Attempt {attempt + 1}/{num_keys}). Trying next key.")
+                st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
+                if attempt == num_keys - 1:
+                    st.error(f"All keys rate-limited while processing citations for paper: {paper.get('title', 'N/A')}")
+            except Exception as e:
+                st.error(f"An error in Citation Chainer with key ...{current_api_key[-4:]} for paper {paper.get('title', 'N/A')} (Attempt {attempt + 1}/{num_keys}): {e}")
+                st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
+                if attempt == num_keys - 1:
+                    st.error(f"Failed to process citations for paper {paper.get('title', 'N/A')} after trying all keys.")
+            
+        if not processed_successfully:
+            # Add a placeholder or note if this paper couldn't be processed
+            chained_citations.append({
+                "title": f"Could not fetch citations for {paper.get('title', 'N/A')}", 
+                "relevance_reason": "API error or all keys rate-limited.", 
+                "search_terms": [],
+                "parent_paper": paper.get('title', 'N/A')
+            })
+            
     return chained_citations
 
 
@@ -427,41 +533,194 @@ def relevance_scorer_agent(groq_client, papers: List[Dict[str, Any]], research_c
 
 
 # Add new Summary Extraction Agent after the citation chainer agent
-def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]], research_context: Dict[str, str]) -> List[
-    Dict[str, Any]]:
-    """Extract meaningful summaries from paper content"""
+def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]], research_context: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Extract meaningful summaries from paper content with API key rotation."""
+
+    if not st.session_state.get('gemini_api_keys_list') or not isinstance(st.session_state.gemini_api_keys_list, list) or not st.session_state.gemini_api_keys_list:
+        st.error("Summary Extraction: Gemini API keys not configured or empty.")
+        for paper in papers:
+            paper['extracted_summary'] = paper.get('snippet', paper.get('title', 'Error: No summary available')) + " (API Key Error)"
+            paper['key_findings'] = ["API Key Error"]
+            paper['topic_relevance'] = "API Key Error"
+        return papers
+
     research_topic = research_context.get('new_angle', 'legal research')
+    num_keys = len(st.session_state.gemini_api_keys_list)
 
     for paper in papers[:10]:  # Limit for performance
-        if paper.get('raw_content') and len(paper['raw_content']) > 100:
-            prompt = f"""
-            Extract a concise summary from this paper content related to: {research_topic}
+        if not paper.get('raw_content') or len(paper['raw_content']) <= 100:
+            paper['extracted_summary'] = paper.get('snippet', paper.get('title', 'No content for summary.'))[:200]
+            paper['key_findings'] = paper.get('key_findings', [])
+            paper['topic_relevance'] = paper.get('topic_relevance', f"Relevant to {research_topic}")
+            continue
 
-            Title: {paper['title']}
-            Content: {paper['raw_content'][:1500]}
+        prompt = f"""
+        Extract a concise summary from this paper content related to: {research_topic}
 
-            Provide:
-            1. Main argument/thesis (1-2 sentences)
-            2. Key findings or principles (2-3 bullet points)
-            3. Relevance to the research topic: {research_topic}
+        Title: {paper['title']}
+        Content: {paper['raw_content'][:1500]}
 
-            Format as JSON with keys: main_argument, key_findings, topic_relevance
-            """
+        Provide:
+        1. Main argument/thesis (1-2 sentences)
+        2. Key findings or principles (2-3 bullet points)
+        3. Relevance to the research topic: {research_topic}
+
+        Format as JSON with keys: main_argument, key_findings, topic_relevance
+        """
+        
+        processed_successfully = False
+        for attempt in range(num_keys):
+            current_key_index = st.session_state.current_gemini_key_index
+            current_api_key = st.session_state.gemini_api_keys_list[current_key_index]
 
             try:
+                genai.configure(api_key=current_api_key, transport='rest')
+                # current_model_for_attempt = genai.GenerativeModel('gemini-2.0-flash')
+                # response = current_model_for_attempt.generate_content(prompt)
                 response = gemini_model.generate_content(prompt)
-                summary_data = json.loads(response.text)
-                paper['extracted_summary'] = summary_data.get('main_argument', '')
-                paper['key_findings'] = summary_data.get('key_findings', [])
-                paper['topic_relevance'] = summary_data.get('topic_relevance', '')
-            except:
-                # Fallback to snippet
-                paper['extracted_summary'] = paper.get('snippet', '')[:200]
-                paper['key_findings'] = []
-                paper['topic_relevance'] = f"Relevant to {research_topic}"
-        else:
-            paper['extracted_summary'] = paper.get('snippet', '')[:200]
+                
+                response_text = response.text.strip()
+                if response_text.startswith("```json"):
+                    response_text = response_text.split("```json")[1].split("```")[0].strip()
+                elif response_text.startswith("```"):
+                    response_text = response_text.split("```")[1].split("```")[0].strip()
 
+                summary_data = json.loads(response_text)
+                paper['extracted_summary'] = summary_data.get('main_argument', paper.get('snippet', 'Error parsing summary')[:200])
+                paper['key_findings'] = summary_data.get('key_findings', [])
+                paper['topic_relevance'] = summary_data.get('topic_relevance', f"Relevance to {research_topic} unclear after parsing error.")
+                processed_successfully = True
+                break # Success for this paper
+
+            except google_exceptions.ResourceExhausted as e:
+                st.warning(f"Rate limit hit for Summary Extraction with key ...{current_api_key[-4:]} (Paper: {paper.get('title', 'N/A')}, Attempt {attempt + 1}/{num_keys}). Trying next key.")
+                st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
+                if attempt == num_keys - 1:
+                    st.error(f"All keys rate-limited while extracting summary for paper: {paper.get('title', 'N/A')}")
+            except Exception as e:
+                st.error(f"An error in Summary Extraction with key ...{current_api_key[-4:]} for paper {paper.get('title', 'N/A')} (Attempt {attempt + 1}/{num_keys}): {e}")
+                st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
+                if attempt == num_keys - 1:
+                    st.error(f"Failed to extract summary for paper {paper.get('title', 'N/A')} after trying all keys.")
+
+        if not processed_successfully:
+            paper['extracted_summary'] = paper.get('snippet', paper.get('title', 'Error: No summary available'))[:200] + " (API Error or All Keys Rate-Limited)"
+            paper['key_findings'] = ["API Error or All Keys Rate-Limited"]
+            paper['topic_relevance'] = "API Error or All Keys Rate-Limited"
+            
+    return papers
+
+
+# Agent for Case Analysis
+def case_analysis_agent(gemini_model, papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Analyzes legal case documents from a list of papers to extract structured information with API key rotation.
+
+    For each paper identified as 'case_law', this function uses a Gemini model
+    to extract facts, legal issues, arguments from both sides, the judgment,
+    and court findings. It updates the paper dictionary with this information.
+    """
+    if not st.session_state.get('gemini_api_keys_list') or not isinstance(st.session_state.gemini_api_keys_list, list) or not st.session_state.gemini_api_keys_list:
+        st.error("Case Analysis: Gemini API keys not configured or empty.")
+        for paper in papers:
+            if paper.get('source_type') == 'case_law':
+                paper.update({
+                    'case_facts': "Error: API keys not configured", 
+                    'legal_issues': ["API keys not configured"], 
+                    'arguments': {"plaintiff": "API keys not configured", "defendant": "API keys not configured"}, 
+                    'judgment': "API keys not configured", 
+                    'court_findings': "API keys not configured"
+                })
+        return papers
+
+    num_keys = len(st.session_state.gemini_api_keys_list)
+
+    for paper in papers:
+        if paper.get('source_type') == 'case_law':
+            # Default error values for this paper if all attempts fail
+            default_error_values = {
+                'case_facts': "Failed to analyze after trying all keys.",
+                'legal_issues': ["Failed to analyze after trying all keys."],
+                'arguments': {"plaintiff": "Failed to analyze", "defendant": "Failed to analyze"},
+                'judgment': "Failed to analyze after trying all keys.",
+                'court_findings': "Failed to analyze after trying all keys."
+            }
+            
+            content_to_analyze = paper.get('raw_content', '') if len(paper.get('raw_content', '')) > 200 else paper.get('snippet', '')
+            if not content_to_analyze: content_to_analyze = paper.get('title', '')
+            truncated_content = content_to_analyze[:2000]
+
+            prompt = f"""
+            Analyze the following legal case based on its title and content.
+            Provide a JSON response with these exact keys: "case_facts", "legal_issues", "arguments" (as a dict with "plaintiff" and "defendant"), "judgment", "court_findings".
+
+            Title: {paper.get('title', 'N/A')}
+            Content: {truncated_content}
+
+            If specific details are not found, use "Not available" or an empty list/dictionary as appropriate for the field type.
+            Example JSON format:
+            {{
+                "case_facts": "Summary of facts...",
+                "legal_issues": ["Issue 1", "Issue 2"],
+                "arguments": {{
+                    "plaintiff": "Plaintiff's arguments...",
+                    "defendant": "Defendant's arguments..."
+                }},
+                "judgment": "The court decided...",
+                "court_findings": "The court found that..."
+            }}
+            """
+            
+            processed_successfully = False
+            for attempt in range(num_keys):
+                current_key_index = st.session_state.current_gemini_key_index
+                current_api_key = st.session_state.gemini_api_keys_list[current_key_index]
+
+                try:
+                    genai.configure(api_key=current_api_key, transport='rest')
+                    # current_model_for_attempt = genai.GenerativeModel('gemini-2.0-flash')
+                    # response = current_model_for_attempt.generate_content(prompt)
+                    response = gemini_model.generate_content(prompt)
+                    
+                    response_text = response.text.strip()
+                    if response_text.startswith("```json"):
+                        response_text = response_text[7:] # Remove ```json
+                    if response_text.endswith("```"):
+                        response_text = response_text[:-3] # Remove ```
+                    
+                    analysis_results = json.loads(response_text)
+
+                    paper['case_facts'] = analysis_results.get('case_facts', "Not available")
+                    paper['legal_issues'] = analysis_results.get('legal_issues', [])
+                    paper['arguments'] = analysis_results.get('arguments', {"plaintiff": "Not available", "defendant": "Not available"})
+                    paper['judgment'] = analysis_results.get('judgment', "Not available")
+                    paper['court_findings'] = analysis_results.get('court_findings', "Not available")
+                    processed_successfully = True
+                    break # Success for this paper
+
+                except google_exceptions.ResourceExhausted as e:
+                    st.warning(f"Rate limit hit for Case Analysis with key ...{current_api_key[-4:]} (Paper: {paper.get('title', 'N/A')}, Attempt {attempt + 1}/{num_keys}). Trying next key.")
+                    st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
+                    if attempt == num_keys - 1:
+                        st.error(f"All keys rate-limited while analyzing case: {paper.get('title', 'N/A')}")
+                        paper.update(default_error_values)
+                except json.JSONDecodeError as e:
+                    st.warning(f"Case Analysis: Error decoding JSON for paper '{paper.get('title', 'Unknown Title')}' with key ...{current_api_key[-4:]} (Attempt {attempt + 1}/{num_keys}): {e}. Raw: {response_text[:100]}")
+                    st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys # Rotate on bad JSON too
+                    if attempt == num_keys - 1:
+                        st.error(f"Failed to decode case analysis for {paper.get('title', 'N/A')} after trying all keys.")
+                        paper.update(default_error_values)
+                except Exception as e:
+                    st.error(f"An error in Case Analysis with key ...{current_api_key[-4:]} for paper {paper.get('title', 'N/A')} (Attempt {attempt + 1}/{num_keys}): {e}")
+                    st.session_state.current_gemini_key_index = (current_key_index + 1) % num_keys
+                    if attempt == num_keys - 1:
+                        st.error(f"Failed to analyze case {paper.get('title', 'N/A')} after trying all keys.")
+                        paper.update(default_error_values)
+            
+            if not processed_successfully:
+                 # This ensures that if all attempts fail for a paper, it gets the error values
+                 paper.update(default_error_values)
+                 
     return papers
 
 
@@ -484,14 +743,91 @@ def main():
     st.title("⚖️ Multi-Agent Legal Research Companion")
     st.markdown("### AI-Powered Research Assistant for Law Students")
 
-    # Initialize clients
+    st.markdown("### AI-Powered Research Assistant for Law Students")
+
+    st.markdown("### AI-Powered Research Assistant for Law Students")
+
+    # Initialize session state variables if they don't exist
+    if 'gemini_api_tokens_str' not in st.session_state:
+        st.session_state.gemini_api_tokens_str = ""
+    if 'gemini_api_keys_list' not in st.session_state:
+        st.session_state.gemini_api_keys_list = []
+    if 'current_gemini_key_index' not in st.session_state:
+        st.session_state.current_gemini_key_index = 0
     if 'clients_initialized' not in st.session_state:
-        with st.spinner("Initializing AI agents..."):
-            st.session_state.gemini_model, st.session_state.groq_client = init_clients()
-            st.session_state.clients_initialized = True
+        st.session_state.clients_initialized = False
+    if 'gemini_model' not in st.session_state:
+        st.session_state.gemini_model = None
+    if 'groq_client' not in st.session_state: # Initialize Groq client placeholder
+        st.session_state.groq_client = None
+
+
+    # Initial Groq client initialization (attempt once if not already set up)
+    # Gemini client is only initialized upon button press.
+    if st.session_state.groq_client is None:
+         # Attempt to initialize Groq client without affecting Gemini.
+         # Pass a dummy or None for Gemini key if init_clients expects it,
+         # or modify init_clients to handle separate initializations.
+         # For this change, assuming init_clients can be called for Groq only if Gemini key is None.
+         # This part might need init_clients to be more flexible or have a separate Groq init.
+         # For now, we'll rely on the button press to also initialize Groq if it wasn't.
+         # A cleaner way would be:
+         try:
+            temp_gemini_model_holder, st.session_state.groq_client = init_clients(api_key="DUMMY_FOR_GROQ_INIT", groq_api_key_override=None) # Pass dummy Gemini key
+            if st.session_state.groq_client:
+                st.sidebar.info("Groq client ready.")
+            else:
+                st.sidebar.warning("Groq client could not be initialized on load.")
+            del temp_gemini_model_holder # We don't want to use this dummy Gemini model
+            if not st.session_state.clients_initialized: # If Gemini isn't set up, clear its model
+                st.session_state.gemini_model = None
+         except TypeError: # If init_clients now strictly requires api_key
+             st.sidebar.info("Groq client will be initialized when Gemini keys are applied.")
+
 
     # Sidebar for inputs
     with st.sidebar:
+        st.header("API Configuration")
+        
+        st.session_state.gemini_api_tokens_str = st.text_input(
+            "Gemini API Tokens (comma-separated):",
+            value=st.session_state.gemini_api_tokens_str,
+            help="Enter one or more Gemini API tokens, separated by commas.",
+            type="password"
+        )
+        
+        if st.button("Apply & Initialize Gemini Key(s)"):
+            if st.session_state.gemini_api_tokens_str:
+                # Parse the string into a list of cleaned keys
+                raw_keys = st.session_state.gemini_api_tokens_str.split(',')
+                st.session_state.gemini_api_keys_list = [key.strip() for key in raw_keys if key.strip()]
+                
+                if st.session_state.gemini_api_keys_list:
+                    st.session_state.current_gemini_key_index = 0
+                    first_key_to_try = st.session_state.gemini_api_keys_list[0]
+                    
+                    with st.spinner(f"Initializing Gemini with the first key from the list..."):
+                        # Call init_clients with the first key
+                        st.session_state.gemini_model, st.session_state.groq_client = init_clients(api_key=first_key_to_try)
+                        
+                        if st.session_state.gemini_model:
+                            st.session_state.clients_initialized = True
+                            st.sidebar.success(f"Gemini initialized successfully using the first of {len(st.session_state.gemini_api_keys_list)} provided key(s).")
+                        else:
+                            st.session_state.clients_initialized = False
+                            st.sidebar.error("Failed to initialize Gemini with the first key. Please check the key.")
+                else:
+                    # List was empty after parsing (e.g., input was just commas or spaces)
+                    st.session_state.gemini_model = None
+                    st.session_state.clients_initialized = False
+                    st.sidebar.error("No valid Gemini API tokens found. Please enter at least one token.")
+            else:
+                # Input string was empty
+                st.session_state.gemini_api_keys_list = []
+                st.session_state.gemini_model = None
+                st.session_state.clients_initialized = False
+                st.sidebar.error("Please enter at least one Gemini API token.")
+
         st.header("Research Configuration")
 
         # Base paper input
@@ -534,6 +870,11 @@ def main():
         st.session_state.search_results = None
 
     if run_research and (base_paper_content or base_paper_url) and research_angle:
+        # Check if Gemini client is initialized before running research
+        if not st.session_state.get('clients_initialized', False) or not st.session_state.gemini_model:
+            st.error("Gemini client is not initialized. Please enter your API key(s) in the sidebar, click 'Apply & Re-initialize API Keys', and ensure it's successful before starting research.")
+            st.stop()
+            
         # Progress tracking
         progress_bar = st.progress(0)
         status_text = st.empty()

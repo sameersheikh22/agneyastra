@@ -70,12 +70,24 @@ def argument_extraction_agent(gemini_model, base_paper_content: str, research_an
         result = json.loads(response_text)
         return result
     except Exception as e:
-        # Fallback extraction based on the research angle
+        # Dynamic fallback based on actual content
+        angle_words = research_angle.split()[:10]
+        content_words = base_paper_content.split()[:50]
+
+        # Extract key terms from the input
+        key_terms = []
+        for word in angle_words + content_words:
+            if len(word) > 4 and word.lower() not in ['this', 'that', 'these', 'those', 'which', 'where', 'when']:
+                key_terms.append(word)
+
         return {
-            "core_thesis": f"Analysis of {research_angle[:100]}...",
-            "key_concepts": ["AI regulation", "risk management", "government competencies", "tort liability"],
+            "core_thesis": f"Analysis of legal aspects related to {' '.join(angle_words[:5])}",
+            "key_concepts": list(set(key_terms[:5])) if key_terms else ["legal analysis", "research", "regulation"],
             "new_angle": research_angle,
-            "research_directions": ["Comparative analysis of AI regulations", "Tort liability frameworks for AI"]
+            "research_directions": [
+                f"Comparative analysis of {angle_words[0] if angle_words else 'topic'}",
+                f"Legal framework for {' '.join(angle_words[:3]) if angle_words else 'subject matter'}"
+            ]
         }
 
 
@@ -124,42 +136,47 @@ def keyword_generator_agent(groq_client, extracted_args: Dict[str, str], seed_ke
             raise ValueError("Response is not a list")
 
     except Exception as e:
-        # Fallback keywords based on extracted arguments
+        # Dynamic fallback based on extracted arguments
         base_keywords = []
 
         # Add angle-based keywords
         if extracted_args.get('new_angle'):
-            angle_words = extracted_args['new_angle'].split()[:5]
-            base_keywords.append(' '.join(angle_words))
+            angle_words = extracted_args['new_angle'].split()
+            base_keywords.append(' '.join(angle_words[:5]))
+            base_keywords.append(f"{' '.join(angle_words[:3])} legal")
+            base_keywords.append(f"{' '.join(angle_words[:3])} case law")
 
         # Add concept-based keywords
         concepts = extracted_args.get('key_concepts', [])
-        if concepts:
-            base_keywords.extend([
-                f"{concepts[0]} legal framework",
-                f"{concepts[0]} case law",
-                f"{concepts[0]} {concepts[1] if len(concepts) > 1 else 'regulation'}"
-            ])
+        for i, concept in enumerate(concepts[:3]):
+            base_keywords.append(f"{concept} legal framework")
+            base_keywords.append(f"{concept} regulation")
+            if i < len(concepts) - 1:
+                base_keywords.append(f"{concept} {concepts[i + 1]}")
 
         # Add seed keywords
         if seed_keywords:
             base_keywords.extend(seed_keywords[:3])
+            for seed in seed_keywords[:2]:
+                base_keywords.append(f"{seed} legal precedent")
 
-        # Generate variations
-        fallback_keywords = [
-            "AI regulation tort liability",
-            "artificial intelligence governance risks",
-            "AI legal framework government competencies",
-            "machine learning regulation challenges",
-            "algorithmic accountability legal",
-            "AI liability frameworks comparative",
-            "artificial intelligence tort law",
-            "AI risk management legal policy"
-        ]
+        # Generate topic-specific variations
+        if concepts:
+            base_keywords.extend([
+                f"{concepts[0]} scholarly articles",
+                f"{concepts[0]} recent developments",
+                f"{concepts[0]} comparative analysis"
+            ])
 
-        # Combine and return
-        all_keywords = base_keywords + fallback_keywords
-        return all_keywords[:15]
+        # Ensure we have at least 15 keywords
+        while len(base_keywords) < 15:
+            if extracted_args.get('new_angle'):
+                words = extracted_args['new_angle'].split()
+                base_keywords.append(' '.join(words[i:i + 3]) for i in range(0, len(words) - 2, 2))
+            else:
+                break
+
+        return base_keywords[:15]
 
 
 # Agent 3: Source Crawler Agent
@@ -316,6 +333,11 @@ def relevance_scorer_agent(groq_client, papers: List[Dict[str, Any]], research_c
     """Score and rank papers by relevance"""
     scored_papers = []
 
+    # Extract key terms from research context for dynamic scoring
+    angle_terms = research_context.get('new_angle', '').lower().split()
+    concept_terms = [c.lower() for c in research_context.get('key_concepts', [])]
+    all_context_terms = angle_terms + concept_terms
+
     for paper in papers:
         prompt = f"""
         Score this paper's relevance (0-100) for the research context:
@@ -333,7 +355,7 @@ def relevance_scorer_agent(groq_client, papers: List[Dict[str, Any]], research_c
         - "insights": key takeaways in 1-2 sentences
 
         Example format:
-        {{"score": 85, "reason": "Directly addresses AI regulation through tort liability", "insights": "Proposes differential liability framework for AI systems"}}
+        {{"score": 85, "reason": "Directly addresses the research topic", "insights": "Provides framework for analysis"}}
         """
 
         try:
@@ -355,42 +377,48 @@ def relevance_scorer_agent(groq_client, papers: List[Dict[str, Any]], research_c
             scoring = json.loads(response_text)
             paper['relevance_score'] = int(scoring.get('score', 50))
             paper['relevance_reason'] = scoring.get('reason', 'Relevance determined by title and content match')
-            paper['key_insights'] = scoring.get('insights', 'Relevant to AI regulation research')
+            paper['key_insights'] = scoring.get('insights', 'Relevant to research topic')
             scored_papers.append(paper)
         except Exception as e:
-            # Fallback scoring based on keyword matching
+            # Dynamic fallback scoring based on actual research context
             title_lower = paper.get('title', '').lower()
             snippet_lower = paper.get('snippet', '').lower()
-            angle_lower = research_context.get('new_angle', '').lower()
 
-            # Simple keyword-based scoring
-            score = 50  # Base score
+            # Dynamic keyword-based scoring
+            score = 40  # Base score
             reasons = []
 
-            # Check for AI/artificial intelligence mentions
-            if 'artificial intelligence' in title_lower or 'ai' in title_lower:
-                score += 20
-                reasons.append("mentions AI")
+            # Check for research angle terms
+            angle_matches = sum(1 for term in angle_terms if term in title_lower or term in snippet_lower)
+            if angle_matches > 0:
+                score += min(angle_matches * 10, 30)
+                reasons.append(f"matches research angle ({angle_matches} terms)")
 
-            # Check for regulation/governance mentions
-            if any(word in title_lower for word in ['regulat', 'govern', 'policy', 'law']):
-                score += 15
-                reasons.append("discusses regulation")
+            # Check for concept matches
+            concept_matches = sum(1 for term in concept_terms if term in title_lower or term in snippet_lower)
+            if concept_matches > 0:
+                score += min(concept_matches * 8, 24)
+                reasons.append(f"contains key concepts ({concept_matches} found)")
 
-            # Check for risk mentions
-            if 'risk' in title_lower or 'challenge' in title_lower:
+            # Check for legal/regulation mentions
+            if any(word in title_lower for word in ['regulat', 'govern', 'policy', 'law', 'legal']):
                 score += 10
-                reasons.append("addresses risks")
+                reasons.append("legal/regulatory focus")
 
-            # Check for tort/liability mentions
-            if 'tort' in angle_lower and ('liabil' in title_lower or 'tort' in title_lower):
-                score += 15
-                reasons.append("covers liability aspects")
+            # Check for case law indicators
+            if ' v. ' in title_lower or 'case' in title_lower:
+                score += 8
+                reasons.append("case law")
+
+            # Source type bonus
+            if paper.get('source_type') == 'scholarly':
+                score += 5
+            elif paper.get('source_type') == 'case_law':
+                score += 7
 
             paper['relevance_score'] = min(score, 95)  # Cap at 95
-            paper['relevance_reason'] = f"Keyword analysis: {', '.join(reasons) if reasons else 'general relevance'}"
-            paper[
-                'key_insights'] = f"May provide insights on {' and '.join(reasons[:2]) if reasons else 'AI regulation'}"
+            paper['relevance_reason'] = f"Relevance: {', '.join(reasons) if reasons else 'general topical match'}"
+            paper['key_insights'] = f"May provide insights on {' and '.join(all_context_terms[:3])}"
             scored_papers.append(paper)
 
     # Sort by relevance score
@@ -399,12 +427,15 @@ def relevance_scorer_agent(groq_client, papers: List[Dict[str, Any]], research_c
 
 
 # Add new Summary Extraction Agent after the citation chainer agent
-def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]], research_context: Dict[str, str]) -> List[
+    Dict[str, Any]]:
     """Extract meaningful summaries from paper content"""
+    research_topic = research_context.get('new_angle', 'legal research')
+
     for paper in papers[:10]:  # Limit for performance
         if paper.get('raw_content') and len(paper['raw_content']) > 100:
             prompt = f"""
-            Extract a concise summary from this academic paper content:
+            Extract a concise summary from this paper content related to: {research_topic}
 
             Title: {paper['title']}
             Content: {paper['raw_content'][:1500]}
@@ -412,9 +443,9 @@ def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]]) -> List
             Provide:
             1. Main argument/thesis (1-2 sentences)
             2. Key findings or principles (2-3 bullet points)
-            3. Relevance to AI regulation and liability
+            3. Relevance to the research topic: {research_topic}
 
-            Format as JSON with keys: main_argument, key_findings, ai_relevance
+            Format as JSON with keys: main_argument, key_findings, topic_relevance
             """
 
             try:
@@ -422,12 +453,12 @@ def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]]) -> List
                 summary_data = json.loads(response.text)
                 paper['extracted_summary'] = summary_data.get('main_argument', '')
                 paper['key_findings'] = summary_data.get('key_findings', [])
-                paper['ai_relevance'] = summary_data.get('ai_relevance', '')
+                paper['topic_relevance'] = summary_data.get('topic_relevance', '')
             except:
                 # Fallback to snippet
                 paper['extracted_summary'] = paper.get('snippet', '')[:200]
                 paper['key_findings'] = []
-                paper['ai_relevance'] = "Relevant to AI governance research"
+                paper['topic_relevance'] = f"Relevant to {research_topic}"
         else:
             paper['extracted_summary'] = paper.get('snippet', '')[:200]
 
@@ -495,6 +526,9 @@ def main():
         run_research = st.button("🔍 Start Research", type="primary", use_container_width=True)
 
     # Main content area
+    if 'search_results' not in st.session_state:
+        st.session_state.search_results = None
+
     if run_research and (base_paper_content or base_paper_url) and research_angle:
         # Progress tracking
         progress_bar = st.progress(0)
@@ -565,10 +599,17 @@ def main():
 
         with st.spinner("Scoring relevance..."):
             status_text.text("Agent 5: Scoring papers...")
-            progress_bar.progress(90)
+            progress_bar.progress(80)
 
             # Combine all results
             all_papers = search_results
+
+            # Extract summaries
+            all_papers = summary_extraction_agent(
+                st.session_state.gemini_model,
+                all_papers,
+                extracted_args
+            )
 
             # Score and rank
             scored_papers = relevance_scorer_agent(
@@ -576,6 +617,8 @@ def main():
                 all_papers[:20],  # Limit for performance
                 extracted_args
             )
+
+        progress_bar.progress(90)
 
         # Display results
         progress_bar.progress(100)
@@ -679,13 +722,27 @@ def main():
 ## Core Thesis of Base Paper
 {extracted_args.get('core_thesis', 'N/A')}
 
-## Top Sources
+## Research Findings
+
+### Scholarly Articles
 """
-            for paper in scored_papers[:10]:
-                brief += f"\n### {paper['title']}\n"
+            for paper in [p for p in scored_papers if p.get('source_type') == 'scholarly'][:5]:
+                brief += f"\n#### {paper['title']}\n"
                 brief += f"- Score: {paper.get('relevance_score', 'N/A')}\n"
+                brief += f"- Summary: {paper.get('extracted_summary', paper.get('snippet', ''))[:200]}...\n"
                 brief += f"- {paper.get('relevance_reason', 'N/A')}\n"
                 brief += f"- Citation: {format_citation(paper, citation_style)}\n"
+
+            brief += "\n### Case Law\n"
+            for case in [p for p in scored_papers if p.get('source_type') == 'case_law'][:5]:
+                brief += f"\n#### {case['title']}\n"
+                brief += f"- Legal Principles: {case.get('key_insights', 'N/A')}\n"
+                brief += f"- Citation: {format_citation(case, 'Bluebook')}\n"
+
+            brief += "\n### Recent Developments\n"
+            for article in [p for p in scored_papers if p.get('source_type') == 'news'][:5]:
+                brief += f"\n#### {article['title']}\n"
+                brief += f"- Key Points: {article.get('snippet', '')[:150]}...\n"
 
             st.download_button(
                 label="📄 Download Research Brief",

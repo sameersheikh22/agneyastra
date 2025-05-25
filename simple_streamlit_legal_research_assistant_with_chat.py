@@ -19,10 +19,6 @@ from langchain_community.embeddings import OllamaEmbeddings
 
 load_dotenv()
 
-# Constants
-OLLAMA_EMBEDDING_BASE_URL = "https://apaims2.0.vassarlabs.com/ollama2"
-EMBEDDING_MODEL = "nomic-embed-text:latest"
-
 # Page config
 st.set_page_config(
     page_title="Legal Research Companion",
@@ -32,12 +28,17 @@ st.set_page_config(
 
 
 # Initialize Ollama Embeddings
-def init_ollama_embeddings(base_url: str, model_name: str):
-    """Initialize OllamaEmbeddings client."""
+def init_ollama_embeddings():
+    """Initialize OllamaEmbeddings client using session state values."""
     try:
+        base_url = st.session_state.ollama_embedding_base_url
+        model_name = st.session_state.ollama_embedding_model
         embeddings = OllamaEmbeddings(base_url=base_url, model=model_name)
-        st.sidebar.info("Ollama Embeddings client initialized successfully.")
+        st.sidebar.info(f"Ollama Embeddings client initialized successfully with base URL: {base_url} and model: {model_name}.")
         return embeddings
+    except AttributeError:
+        st.sidebar.error("Ollama Embeddings Init Error: Required session state variables (ollama_embedding_base_url, ollama_embedding_model) not set.")
+        return None
     except Exception as e:
         st.sidebar.error(f"Ollama Embeddings Init Error: {e}")
         return None
@@ -70,9 +71,9 @@ def init_clients(api_key: str):
 
 
 # Agent 1: Argument Extraction Agent (Ollama)
-def argument_extraction_agent_ollama(base_paper_content: str, research_angle: str) -> Dict[str, str]:
+def argument_extraction_agent_ollama(base_paper_content: str, research_angle: str, ollama_base_url: str, ollama_model: str) -> Dict[str, str]:
     """Extract core thesis and identify new research direction using Ollama."""
-    ollama_api_url = "https://apaims2.0.vassarlabs.com/ollama1/api/generate"
+    ollama_api_url = f"{ollama_base_url}/api/generate"
     prompt = f"""
     Analyze the following legal research paper and the student's new research angle.
 
@@ -98,7 +99,7 @@ def argument_extraction_agent_ollama(base_paper_content: str, research_angle: st
     """
 
     payload = {
-        "model": "gemma3:12b",
+        "model": ollama_model,
         "prompt": prompt,
         "stream": False
     }
@@ -173,7 +174,9 @@ def argument_extraction_agent(gemini_model, base_paper_content: str, research_an
     selected_model = st.session_state.get('selected_model', "Gemini")  # Default to Gemini if not set
 
     if selected_model == "Ollama":
-        return argument_extraction_agent_ollama(base_paper_content, research_angle)
+        ollama_base_url = st.session_state.ollama_api_base_url # Get from session state
+        ollama_model = st.session_state.ollama_model # Get from session state
+        return argument_extraction_agent_ollama(base_paper_content, research_angle, ollama_base_url, ollama_model)
 
     # Existing Gemini Logic (ensure gemini_model is available)
     if not gemini_model:  # Added check for gemini_model
@@ -509,9 +512,9 @@ def source_crawler_agent(keywords: List[str], num_results: int = 5) -> List[Dict
 
 
 # Agent 4: Citation Chainer Agent (Ollama)
-def citation_chainer_agent_ollama(top_papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def citation_chainer_agent_ollama(top_papers: List[Dict[str, Any]], ollama_base_url: str, ollama_model: str) -> List[Dict[str, Any]]:
     """Extract and follow citation trails using Ollama."""
-    ollama_api_url = "https://apaims2.0.vassarlabs.com/ollama1/api/generate"
+    ollama_api_url = f"{ollama_base_url}/api/generate"
     chained_citations = []
 
     for paper in top_papers[:3]:  # Limit for performance
@@ -534,7 +537,7 @@ def citation_chainer_agent_ollama(top_papers: List[Dict[str, Any]]) -> List[Dict
         ]
         """
         payload = {
-            "model": "gemma3:12b",
+            "model": ollama_model,
             "prompt": prompt,
             "stream": False
         }
@@ -622,7 +625,9 @@ def citation_chainer_agent(gemini_model, top_papers: List[Dict[str, Any]]) -> Li
     selected_model = st.session_state.get('selected_model', "Gemini")
 
     if selected_model == "Ollama":
-        return citation_chainer_agent_ollama(top_papers)
+        ollama_base_url = st.session_state.ollama_api_base_url # Get from session state
+        ollama_model = st.session_state.ollama_model # Get from session state
+        return citation_chainer_agent_ollama(top_papers, ollama_base_url, ollama_model)
 
     # Existing Gemini Logic
     if not gemini_model:
@@ -808,10 +813,10 @@ def relevance_scorer_agent(groq_client, papers: List[Dict[str, Any]], research_c
 
 
 # Agent: Summary Extraction Agent (Ollama)
-def summary_extraction_agent_ollama(papers: List[Dict[str, Any]], research_context: Dict[str, str]) -> List[
+def summary_extraction_agent_ollama(papers: List[Dict[str, Any]], research_context: Dict[str, str], ollama_base_url: str, ollama_model: str) -> List[
     Dict[str, Any]]:
     """Extract meaningful summaries from paper content using Ollama."""
-    ollama_api_url = "https://apaims2.0.vassarlabs.com/ollama1/api/generate"
+    ollama_api_url = f"{ollama_base_url}/api/generate"
     research_topic = research_context.get('new_angle', 'legal research')
 
     # Limit is applied by the caller (summary_extraction_agent)
@@ -843,7 +848,7 @@ def summary_extraction_agent_ollama(papers: List[Dict[str, Any]], research_conte
         }}
         """
         payload = {
-            "model": "gemma3:12b",
+            "model": ollama_model,
             "prompt": prompt,
             "stream": False
         }
@@ -920,7 +925,9 @@ def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]], researc
     selected_model = st.session_state.get('selected_model', "Gemini")
 
     if selected_model == "Ollama":
-        return summary_extraction_agent_ollama(papers, research_context)
+        ollama_base_url = st.session_state.ollama_api_base_url # Get from session state
+        ollama_model = st.session_state.ollama_model # Get from session state
+        return summary_extraction_agent_ollama(papers, research_context, ollama_base_url, ollama_model)
 
     # Existing Gemini Logic
     if not gemini_model:
@@ -1020,9 +1027,9 @@ def summary_extraction_agent(gemini_model, papers: List[Dict[str, Any]], researc
 
 
 # Agent for Case Analysis (Ollama)
-def case_analysis_agent_ollama(papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def case_analysis_agent_ollama(papers: List[Dict[str, Any]], ollama_base_url: str, ollama_model: str) -> List[Dict[str, Any]]:
     """Analyzes legal case documents from a list of papers to extract structured information using Ollama."""
-    ollama_api_url = "https://apaims2.0.vassarlabs.com/ollama1/api/generate"
+    ollama_api_url = f"{ollama_base_url}/api/generate"
 
     default_ollama_error_values = {
         'case_facts': "Ollama Error: Could not analyze.",
@@ -1070,7 +1077,7 @@ def case_analysis_agent_ollama(papers: List[Dict[str, Any]]) -> List[Dict[str, A
             }}
             """
             payload = {
-                "model": "gemma3:12b",
+                "model": ollama_model,
                 "prompt": prompt,
                 "stream": False
             }
@@ -1155,7 +1162,9 @@ def case_analysis_agent(gemini_model, papers: List[Dict[str, Any]]) -> List[Dict
     selected_model = st.session_state.get('selected_model', "Gemini")
 
     if selected_model == "Ollama":
-        return case_analysis_agent_ollama(papers)
+        ollama_base_url = st.session_state.ollama_api_base_url # Get from session state
+        ollama_model = st.session_state.ollama_model # Get from session state
+        return case_analysis_agent_ollama(papers, ollama_base_url, ollama_model)
 
     # Existing Gemini Logic
     if not gemini_model:
@@ -1347,6 +1356,15 @@ def main():
         st.session_state.ollama_advanced_options_str = "{}"  # Default to an empty JSON object string
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []  # List of tuples (query, response) or dicts
+    # New Ollama session state variables
+    if 'ollama_api_base_url' not in st.session_state:
+        st.session_state.ollama_api_base_url = os.getenv("OLLAMA_API_BASE_URL") or "http://localhost:11434"
+    if 'ollama_model' not in st.session_state:
+        st.session_state.ollama_model = os.getenv("OLLAMA_MODEL") or "gemma3:12b"
+    if 'ollama_embedding_base_url' not in st.session_state:
+        st.session_state.ollama_embedding_base_url = os.getenv("OLLAMA_EMBEDDING_BASE_URL") or "http://localhost:11434"
+    if 'ollama_embedding_model' not in st.session_state:
+        st.session_state.ollama_embedding_model = os.getenv("OLLAMA_EMBEDDING_MODEL") or "nomic-embed-text:latest"
 
     # Load API Keys from .env and initialize clients
     gemini_api_keys_env = os.getenv("GEMINI_API_KEYS")
@@ -1363,9 +1381,9 @@ def main():
             if st.session_state.gemini_model:
                 st.session_state.clients_initialized = True # This flag might still be useful
                 st.sidebar.success(f"Gemini initialized using the first of {len(st.session_state.gemini_api_keys_list)} key(s) from .env.")
-                # Initialize Ollama embeddings if Gemini is up
+                # Initialize Ollama embeddings if Gemini is up (now uses session state)
                 if not st.session_state.ollama_embeddings:
-                    st.session_state.ollama_embeddings = init_ollama_embeddings(OLLAMA_EMBEDDING_BASE_URL, EMBEDDING_MODEL)
+                    st.session_state.ollama_embeddings = init_ollama_embeddings()
             else:
                 st.session_state.clients_initialized = False
                 st.sidebar.error("Failed to initialize Gemini with the first key from .env. Check GEMINI_API_KEYS.")
@@ -1420,7 +1438,31 @@ def main():
 
         # Ollama Specific Configuration
         if st.session_state.selected_model == "Ollama":
-            st.subheader("Ollama Specific Configuration")
+            st.subheader("Ollama API Configuration")
+            st.session_state.ollama_api_base_url = st.text_input(
+                "Ollama API Base URL:",
+                value=st.session_state.ollama_api_base_url,
+                help="The base URL for the Ollama API (e.g., http://localhost:11434)."
+            )
+            st.session_state.ollama_model = st.text_input(
+                "Ollama Model Name:",
+                value=st.session_state.ollama_model,
+                help="The name of the Ollama model to use for generation (e.g., gemma3:12b)."
+            )
+
+            st.subheader("Ollama Embeddings Configuration")
+            st.session_state.ollama_embedding_base_url = st.text_input(
+                "Ollama Embeddings Base URL:",
+                value=st.session_state.ollama_embedding_base_url,
+                help="The base URL for the Ollama API used for embeddings (e.g., http://localhost:11434)."
+            )
+            st.session_state.ollama_embedding_model = st.text_input(
+                "Ollama Embeddings Model Name:",
+                value=st.session_state.ollama_embedding_model,
+                help="The name of the Ollama model to use for embeddings (e.g., nomic-embed-text:latest)."
+            )
+
+            st.subheader("Ollama Advanced Configuration")
             st.session_state.ollama_max_prompt_chars = st.number_input(
                 "Max content length for Ollama prompts (characters):",
                 min_value=500,
@@ -1542,9 +1584,8 @@ def main():
 
         if st.session_state.selected_model == "Ollama":
             if not st.session_state.ollama_embeddings:
-                st.session_state.ollama_embeddings = init_ollama_embeddings(
-                    OLLAMA_EMBEDDING_BASE_URL, EMBEDDING_MODEL
-                )
+                # init_ollama_embeddings now uses session state, ensure it's called after UI inputs are processed
+                st.session_state.ollama_embeddings = init_ollama_embeddings()
                 if not st.session_state.ollama_embeddings:
                     st.error("Ollama Embeddings client could not be initialized. Chat functionality might be affected.")
                     # Optionally, you could stop execution if embeddings are critical:
@@ -1784,7 +1825,7 @@ def main():
                         try:
                             with thoughts_container:
                                 st.write(
-                                    f"- Generating embeddings for {len(text_contents_for_embedding)} document(s) using Ollama ({EMBEDDING_MODEL})...")
+                                    f"- Generating embeddings for {len(text_contents_for_embedding)} document(s) using Ollama ({st.session_state.ollama_embedding_model})...")
                             embeddings_vectors = st.session_state.ollama_embeddings.embed_documents(
                                 text_contents_for_embedding)
                             with thoughts_container:

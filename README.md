@@ -39,8 +39,23 @@ pip install -r requirements.txt
      ⁠
 
 4.⁠ ⁠*Configuration:*
-   - Enter your Gemini API keys (comma-separated) and Groq API key in the sidebar when prompted.
-   - Adjust other agent and research settings as needed.
+   - Before running the app, create a `.env` file in the root of the project (e.g., `agneyastra/.env`).
+   - Populate the `.env` file with your API keys. It should follow this format:
+     ```env
+     # Groq API Key
+     GROQ_API_KEY="your_groq_api_key_here"
+
+     # Tavily API Key
+     TAVILY_API_KEY="your_tavily_api_key_here"
+
+     # Serper API Key
+     SERPER_API_KEY="your_serper_api_key_here"
+
+     # Gemini API Keys (comma-separated if you have multiple)
+     GEMINI_API_KEYS="your_gemini_api_key_1,your_gemini_api_key_2"
+     ```
+   - Replace `your_..._key_here` with your actual API keys. The `.env` file is included in `.gitignore` and should not be committed to your repository.
+   - Adjust other agent and research settings as needed in the sidebar.
 
 ---
 

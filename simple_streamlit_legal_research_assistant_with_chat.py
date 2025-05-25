@@ -1,5 +1,6 @@
 import io
-
+import os
+from dotenv import load_dotenv
 import PyPDF2
 import streamlit as st
 import requests
@@ -15,6 +16,8 @@ from groq import Groq
 from google.api_core import exceptions as google_exceptions
 import chromadb
 from langchain_community.embeddings import OllamaEmbeddings
+
+load_dotenv()
 
 # Constants
 OLLAMA_EMBEDDING_BASE_URL = "https://apaims2.0.vassarlabs.com/ollama2"
@@ -41,7 +44,7 @@ def init_ollama_embeddings(base_url: str, model_name: str):
 
 
 # Initialize API clients
-def init_clients(api_key: str, groq_api_key_override: str = None):
+def init_clients(api_key: str):
     """Initialize API clients with provided keys. Gemini API key is mandatory."""
     gemini_model = None
     try:
@@ -52,18 +55,16 @@ def init_clients(api_key: str, groq_api_key_override: str = None):
         gemini_model = None
 
     # Groq
-    # Use override if provided, else use the hardcoded one.
-    # In a real app, this hardcoded key should also be handled via secrets or input.
-    final_groq_key = groq_api_key_override if groq_api_key_override else "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"
     groq_client = None
-    if final_groq_key:
+    groq_api_key_env = os.getenv("GROQ_API_KEY")
+    if groq_api_key_env:
         try:
-            groq_client = Groq(api_key=final_groq_key)
+            groq_client = Groq(api_key=groq_api_key_env)
+            # st.sidebar.info("Groq client initialized with key from .env.") # Optional: for debugging
         except Exception as e:
-            st.sidebar.warning(f"Groq Init Error: {e}")
-            groq_client = None
+            st.sidebar.warning(f"Groq Init Error (from .env): {e}")
     else:
-        st.sidebar.warning("Groq API key not available.")
+        st.sidebar.warning("GROQ_API_KEY not found in .env. Groq features may be unavailable.")
 
     return gemini_model, groq_client
 
@@ -397,11 +398,11 @@ def source_crawler_agent(keywords: List[str], num_results: int = 5) -> List[Dict
     all_results = []
 
     # Tavily API search
-    tavily_key = "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"
+    tavily_key = os.getenv("TAVILY_API_KEY")
     tavily_url = "https://api.tavily.com/search"
 
     # Serper API search
-    serper_key = "3611eaea5638a59ec95b6329077ddd9c8a71ece3"
+    serper_key = os.getenv("SERPER_API_KEY")
     serper_url = "https://google.serper.dev/search"
 
     # Search different types of sources
@@ -1318,8 +1319,8 @@ def main():
     st.markdown("### AI-Powered Research Assistant for Law Students")
 
     # Initialize session state variables if they don't exist
-    if 'gemini_api_tokens_str' not in st.session_state:
-        st.session_state.gemini_api_tokens_str = ""
+    # if 'gemini_api_tokens_str' not in st.session_state: # Removed as keys come from .env
+    #     st.session_state.gemini_api_tokens_str = ""
     if 'gemini_api_keys_list' not in st.session_state:
         st.session_state.gemini_api_keys_list = []
     if 'current_gemini_key_index' not in st.session_state:
@@ -1347,38 +1348,74 @@ def main():
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []  # List of tuples (query, response) or dicts
 
-    # Initial Groq client initialization (attempt once if not already set up)
-    # Gemini client is only initialized upon button press.
-    if st.session_state.groq_client is None:
-        # Attempt to initialize Groq client without affecting Gemini.
-        # Pass a dummy or None for Gemini key if init_clients expects it,
-        # or modify init_clients to handle separate initializations.
-        # For this change, assuming init_clients can be called for Groq only if Gemini key is None.
-        # This part might need init_clients to be more flexible or have a separate Groq init.
-        # For now, we'll rely on the button press to also initialize Groq if it wasn't.
-        # A cleaner way would be:
-        try:
-            temp_gemini_model_holder, st.session_state.groq_client = init_clients(api_key="DUMMY_FOR_GROQ_INIT",
-                                                                                  groq_api_key_override=None)  # Pass dummy Gemini key
-            if st.session_state.groq_client:
-                st.sidebar.info("Groq client ready.")
+    # Load API Keys from .env and initialize clients
+    gemini_api_keys_env = os.getenv("GEMINI_API_KEYS")
+    if gemini_api_keys_env:
+        st.session_state.gemini_api_keys_list = [key.strip() for key in gemini_api_keys_env.split(',') if key.strip()]
+        if st.session_state.gemini_api_keys_list:
+            st.session_state.current_gemini_key_index = 0
+            first_gemini_key = st.session_state.gemini_api_keys_list[0]
+            
+            # Initialize Gemini and Groq clients
+            # init_clients will use the first Gemini key and GROQ_API_KEY from .env
+            st.session_state.gemini_model, st.session_state.groq_client = init_clients(api_key=first_gemini_key)
+            
+            if st.session_state.gemini_model:
+                st.session_state.clients_initialized = True # This flag might still be useful
+                st.sidebar.success(f"Gemini initialized using the first of {len(st.session_state.gemini_api_keys_list)} key(s) from .env.")
+                # Initialize Ollama embeddings if Gemini is up
+                if not st.session_state.ollama_embeddings:
+                    st.session_state.ollama_embeddings = init_ollama_embeddings(OLLAMA_EMBEDDING_BASE_URL, EMBEDDING_MODEL)
             else:
-                st.sidebar.warning("Groq client could not be initialized on load.")
-            del temp_gemini_model_holder  # We don't want to use this dummy Gemini model
-            if not st.session_state.clients_initialized:  # If Gemini isn't set up, clear its model
-                st.session_state.gemini_model = None
-        except TypeError:  # If init_clients now strictly requires api_key
-            st.sidebar.info("Groq client will be initialized when Gemini keys are applied.")
+                st.session_state.clients_initialized = False
+                st.sidebar.error("Failed to initialize Gemini with the first key from .env. Check GEMINI_API_KEYS.")
+            
+            # Check Groq client status (it's initialized within init_clients)
+            if st.session_state.groq_client:
+                st.sidebar.info("Groq client also attempted initialization via init_clients.")
+            elif not os.getenv("GROQ_API_KEY"):
+                st.sidebar.warning("GROQ_API_KEY not in .env. Groq features might be limited.")
+            else: # GROQ_API_KEY was present but client is None
+                st.sidebar.error("Groq client failed to initialize despite key in .env.")
+
+        else: # No valid keys after parsing GEMINI_API_KEYS
+            st.session_state.clients_initialized = False
+            st.sidebar.error("No valid Gemini API tokens found in GEMINI_API_KEYS from .env.")
+            # Attempt to init Groq if Gemini keys are missing/invalid but Groq key might be present
+            if not st.session_state.groq_client and os.getenv("GROQ_API_KEY"):
+                _, st.session_state.groq_client = init_clients(api_key="DUMMY_GEMINI_KEY_FOR_GROQ_INIT") # Pass a dummy, init_clients handles Groq separately
+                if st.session_state.groq_client:
+                     st.sidebar.info("Groq client initialized independently as Gemini keys were an issue.")
+                else:
+                     st.sidebar.error("Groq client also failed to initialize.")
+    else: # GEMINI_API_KEYS not in .env
+        st.session_state.clients_initialized = False
+        st.sidebar.error("GEMINI_API_KEYS not found in .env. Gemini features unavailable.")
+        # Attempt to init Groq if Gemini keys are missing entirely but Groq key might be present
+        # Since init_clients now only takes api_key (for Gemini), we need a way to init Groq if Gemini isn't used.
+        # For simplicity, if GEMINI_API_KEYS is not set, we assume Gemini is not used.
+        # We can call init_clients with a dummy key just to get Groq initialized if its key exists.
+        # This assumes init_clients is robust enough to handle a dummy Gemini key if its purpose is only Groq init.
+        # A cleaner way might be a separate init_groq_client() if this becomes too complex.
+        try:
+            _, st.session_state.groq_client = init_clients(api_key="GARBAGE_KEY_GEMINI_NOT_USED") # This call is primarily for Groq
+            if st.session_state.groq_client:
+                 st.sidebar.info("Groq client initialized (Gemini keys not provided in .env).")
+            elif os.getenv("GROQ_API_KEY"): # Key was there but failed
+                 st.sidebar.error("Groq client failed to initialize despite key in .env (Gemini keys not provided).")
+            # No message if GROQ_API_KEY is also missing
+        except Exception as e:
+            st.sidebar.error(f"Error initializing Groq when Gemini keys are missing: {e}")
 
     # Sidebar for inputs
     with st.sidebar:
-        st.header("API Configuration")
+        st.header("Model Configuration") # Changed from API Configuration
 
         st.session_state.selected_model = st.radio(
             "Select Model:",
             ("Gemini", "Ollama"),
             index=0 if st.session_state.selected_model == "Gemini" else 1,  # Set index based on current session state
-            help="Choose the model to use for generation."
+            help="Choose the model to use for generation. API keys for selected cloud models must be in .env."
         )
 
         # Ollama Specific Configuration
@@ -1399,52 +1436,7 @@ def main():
                 help='Enter a JSON string for Ollama options, e.g., `{"temperature": 0.7, "num_predict": 100}`. These will be passed in the "options" field of the API request.'
             )
 
-        st.session_state.gemini_api_tokens_str = st.text_input(
-            "Gemini API Tokens (comma-separated):",
-            value=st.session_state.gemini_api_tokens_str,
-            help="Enter one or more Gemini API tokens, separated by commas.",
-            type="password"
-        )
-
-        if st.button("Apply & Initialize Gemini Key(s)"):
-            if st.session_state.gemini_api_tokens_str:
-                # Parse the string into a list of cleaned keys
-                raw_keys = st.session_state.gemini_api_tokens_str.split(',')
-                st.session_state.gemini_api_keys_list = [key.strip() for key in raw_keys if key.strip()]
-
-                if st.session_state.gemini_api_keys_list:
-                    st.session_state.current_gemini_key_index = 0
-                    first_key_to_try = st.session_state.gemini_api_keys_list[0]
-
-                    with st.spinner(f"Initializing Gemini with the first key from the list..."):
-                        # Call init_clients with the first key
-                        st.session_state.gemini_model, st.session_state.groq_client = init_clients(
-                            api_key=first_key_to_try)
-
-                        if st.session_state.gemini_model:
-                            st.session_state.clients_initialized = True
-                            st.sidebar.success(
-                                f"Gemini initialized successfully using the first of {len(st.session_state.gemini_api_keys_list)} provided key(s).")
-                            # Attempt to initialize Ollama Embeddings regardless of selected model,
-                            # as it's needed for the chat functionality with the vector store.
-                            if not st.session_state.ollama_embeddings:  # Check if not already initialized
-                                st.session_state.ollama_embeddings = init_ollama_embeddings(
-                                    OLLAMA_EMBEDDING_BASE_URL, EMBEDDING_MODEL
-                                )
-                        else:
-                            st.session_state.clients_initialized = False
-                            st.sidebar.error("Failed to initialize Gemini with the first key. Please check the key.")
-                else:
-                    # List was empty after parsing (e.g., input was just commas or spaces)
-                    st.session_state.gemini_model = None
-                    st.session_state.clients_initialized = False
-                    st.sidebar.error("No valid Gemini API tokens found. Please enter at least one token.")
-            else:
-                # Input string was empty
-                st.session_state.gemini_api_keys_list = []
-                st.session_state.gemini_model = None
-                st.session_state.clients_initialized = False
-                st.sidebar.error("Please enter at least one Gemini API token.")
+        # Gemini API key input and button removed.
 
         st.header("Research Configuration")
 
@@ -1742,11 +1734,11 @@ def main():
             with thoughts_container:
                 st.success("✓ Completed content extraction")
 
-            # ---> Add the following block here <---
+            # Vector store population logic
             if st.session_state.ollama_embeddings and st.session_state.chroma_collection and all_papers:
                 with st.spinner("Generating embeddings and updating vector store..."):
                     status_text.text("Embedding documents for chat...")
-                    progress_bar.progress(85)  # Adjust progress value as needed
+                    progress_bar.progress(85)
 
                     with thoughts_container:
                         st.write("\n**Vector Store Population:**")
@@ -1758,63 +1750,52 @@ def main():
                     text_contents_for_embedding = []
 
                     for i, paper in enumerate(all_papers):
-                        # Determine the best content for embedding
                         content = ""
                         if paper.get('extracted_summary'):
                             content = paper['extracted_summary']
                         elif paper.get('raw_content'):
-                            content = paper['raw_content'][:2000]  # Truncate long raw content
+                            content = paper['raw_content'][:2000]
                         elif paper.get('snippet'):
                             content = paper['snippet']
                         else:
-                            content = paper.get('title', '')  # Fallback to title
+                            content = paper.get('title', '')
 
-                        if not content.strip():  # Skip if content is empty
+                        if not content.strip():
                             with thoughts_container:
                                 st.warning(
                                     f"  - Skipping paper '{paper.get('title', 'Unknown Title')}' due to empty content for embedding.")
                             continue
 
                         text_contents_for_embedding.append(content)
-
-                        # Prepare metadata
                         metadata = {
                             "title": paper.get('title', 'N/A'),
                             "url": paper.get('url', 'N/A'),
                             "source_type": paper.get('source_type', 'N/A'),
-                            "original_snippet": paper.get('snippet', '')[:500]  # Store snippet for context
+                            "original_snippet": paper.get('snippet', '')[:500]
                         }
-                        # Add case-specific info if available
                         if paper.get('source_type') == 'case_law':
                             metadata["case_facts"] = paper.get('case_facts', 'N/A')
                             metadata["judgment"] = paper.get('judgment', 'N/A')
-
                         metadatas_to_embed.append(metadata)
                         ids_to_embed.append(
-                            f"doc_{i}_{paper.get('url', paper.get('title', ''))[:50]}")  # Create unique ID
+                            f"doc_{i}_{paper.get('url', paper.get('title', ''))[:50]}")
 
                     if text_contents_for_embedding:
                         try:
                             with thoughts_container:
                                 st.write(
                                     f"- Generating embeddings for {len(text_contents_for_embedding)} document(s) using Ollama ({EMBEDDING_MODEL})...")
-
-                            # Generate embeddings in batch
                             embeddings_vectors = st.session_state.ollama_embeddings.embed_documents(
                                 text_contents_for_embedding)
-
                             with thoughts_container:
                                 st.write(f"- Successfully generated {len(embeddings_vectors)} embedding vectors.")
                                 st.write(
                                     f"- Adding {len(text_contents_for_embedding)} documents to Chroma collection '{st.session_state.chroma_collection.name}'.")
-
-                            # Add to Chroma collection
-                            # Note: Chroma expects 'documents' to be the text content itself, not a dict.
                             st.session_state.chroma_collection.add(
                                 ids=ids_to_embed,
                                 embeddings=embeddings_vectors,
                                 metadatas=metadatas_to_embed,
-                                documents=text_contents_for_embedding  # Pass the actual text content here
+                                documents=text_contents_for_embedding
                             )
                             with thoughts_container:
                                 st.success(
@@ -1831,16 +1812,14 @@ def main():
                     st.warning("\n**Vector Store Population:** No search results to embed.")
             elif not st.session_state.ollama_embeddings:
                 with thoughts_container:
-                    st.warning(
-                        "\n**Vector Store Population:** Ollama embeddings client not available. Skipping embedding.")
+                    st.warning("\n**Vector Store Population:** Ollama embeddings client not available. Skipping embedding.")
             elif not st.session_state.chroma_collection:
                 with thoughts_container:
                     st.warning("\n**Vector Store Population:** Chroma collection not available. Skipping embedding.")
-            # ---> End of the new block <---
-
-        with st.spinner("Scoring relevance..."):  # Existing line
-            status_text.text("Agent 6: Scoring papers...")  # Existing line
-            progress_bar.progress(90)  # Existing line (adjust if new progress was 85)
+            
+        with st.spinner("Scoring relevance..."):
+            status_text.text("Agent 6: Scoring papers...")
+            progress_bar.progress(90)
 
             with thoughts_container:
                 st.write("\n**Agent 6 - Relevance Scorer:**")

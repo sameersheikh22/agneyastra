@@ -35,7 +35,7 @@ pip install -r requirements.txt
 3.⁠ ⁠*Run the Streamlit app:*
 
     ⁠ bash
-    streamlit run simple_streamlit_legal_research_assistant.py
+    streamlit run simple_streamlit_legal_research_assistant_with_chat.py
      ⁠
 
 4.⁠ ⁠*Configuration:*
@@ -79,7 +79,7 @@ The core logic is implemented in ⁠ simple_streamlit_legal_research_assistant
 
 ## Notes
 
-•⁠  ⁠All logic is contained in the root Streamlit app file: [⁠ simple_streamlit_legal_research_assistant.py ⁠](simple_streamlit_legal_research_assistant.py)
+•⁠  ⁠All logic is contained in the root Streamlit app file: [⁠ simple_streamlit_legal_research_assistant_with_chat.py ⁠](simple_streamlit_legal_research_assistant.py)
 •⁠
 
 

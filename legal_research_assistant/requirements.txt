@@ -1,5 +1,0 @@
-spacy
-requests
-beautifulsoup4
-pytest
-tavily-python
